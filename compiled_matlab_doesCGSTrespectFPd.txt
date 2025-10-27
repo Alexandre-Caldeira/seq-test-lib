@@ -1,0 +1,2815 @@
+============================================================
+=== FILE START: DataLoader.m
+============================================================
+
+classdef DataLoader
+% IN: experimental .mat data path or MC sim parameters
+% out: Y (freq. data for testing)
+
+    properties
+       
+        % y (timeseries data, MC sim or exp aquisition)
+        signals % Stores timeseries of the latest loaded exam
+        SIGNALS % Stores frequency spectrum of the latest loaded exam
+        
+        % Stores timeseries from all selected subjects and stimuli
+        groupSignals % stimulus-subject-indexed cell:
+                     % groupSignals{stimulus,subject} -> y(sample,window,channel)
+
+        % Stores frequency spectrum  from all selected subjects and stimuli
+        groupSIGNALS % stimulus-subject-indexed cell: 
+                     % groupSIGNALS{stimulus,subject} -> Y(sample,window,channel)
+
+        signalFrequencies = [82    84    86    88    90    92    94    96];
+        noiseFrequencies = [];
+        
+        % Processing Parameters
+        channels = 1:16;  % Index for EEG leads (channels) in data
+        fs       = 1000;  % Sampling frequency (Hz)
+        nfft              % Number of FFT points per epoch (1 sec window in NIASv1)
+        nBins             % Number of 'positive frequency' values on the spectrum
+        nChannels         % length of channels vector
+        duration = [60];  % exam duration [secs], per zanoteliStimulusIndex intensity
+        totalSamples
+
+        % For MC Simulation        
+        noiseMean = -10
+        noiseStd = 1
+        groupNoiseMean = [0 -15 -30]
+        groupNoiseStd  = [1   1   1]
+        SNRfun
+
+        % For ASSR EEG Data
+        zanoteliSubjectIndex = 1;
+        zanoteliStimulusIndex = 1;
+
+        selectedZanoteliSubjects
+        selectedZanoteliStimuli
+
+        zanoteliSuggestedMMax = [50; 50; 240; 440; 440; 20];
+        zanoteliStimulusNames = {'70dB'; '60dB'; '50dB';
+                                 '40dB'; '30dB';'ESP'};
+        zanoteliSubjects  = {'Ab'; 'An'; 'Bb'; 'Er'; 'Lu';...
+                             'So'; 'Qu'; 'Vi'; 'Sa'; 'Ti';'Wr'};
+        zanoteliLeads = {'FC'; 'F4'; 'T6'; 'P4'; 'T4'; 'Oz'; 'C4'; 'T5';...
+                         'P3'; 'F7'; 'F3'; 'T3'; 'C3'; 'Fz'; 'Pz'; 'Cz'}
+
+        % Utils
+        timer   % obj timer
+        id      % obj id
+        
+        inPath  = 'C:\PPGEE\SBEB_CBA_24\CGST_figuras\Sinais_EEG\' % where y comes from
+        outPath % where Y is saved
+        mode    % simulation mode 'sim' or 'exp'
+        
+
+    end
+    
+    methods
+        function obj = DataLoader(mode,varargin)
+            obj.timer = tic;
+            obj.id = [num2str(keyHash(keyHash(mode)+obj.timer))];
+            obj.outPath = [pwd,'\'];
+            
+            if nargin == 2
+                obj.inPath = varargin{1};
+            elseif nargin == 3
+                obj.inPath = varargin{1};
+                obj.outPath = varargin{2};
+            end
+    
+            obj.nfft = obj.fs; 
+            obj.nBins = floor(obj.fs/2)+1; % ...
+
+            % Randomly selects noise frequencies (above 300 Hz) 
+            % Wihouth replacement
+            obj.noiseFrequencies = 300+randperm(200,numel(obj.signalFrequencies));
+            
+            % With replacement
+            % obj.noiseFrequencies = randi([300 500],1, ...
+            %                         numel(obj.signalFrequencies));
+
+            % By default, SNR is:
+            % Adiciona ruido gaussiano branco com SNR aleatoria 
+            obj.SNRfun = @() obj.noiseMean+obj.noiseStd()*randn(1);
+
+            obj.mode = mode;
+            if matches(obj.mode(1:3),"sim", IgnoreCase=true)
+                
+                % Run MC Sim
+                obj = obj.genSimulatedSignals();
+                obj = obj.computeFFT();
+
+            elseif matches(obj.mode(1:3),"exp", IgnoreCase=true)
+                % Try to load exp data for validation
+
+                %carregar o voluntário
+                zanoteliSubjectIndex = obj.zanoteliSubjectIndex; 
+                
+                %intensidadde 
+                zanoteliStimulusNames = cell2mat(obj.zanoteliStimulusNames(obj.zanoteliStimulusIndex));
+                
+                obj = obj.loadEEGData(zanoteliSubjectIndex, zanoteliStimulusNames);
+
+            else
+                % Throw error
+                error('DataLoader mode input is invalid.'); 
+            end
+
+        end
+
+        function obj = loadEEGData(obj, zanoteliSubjectIndex, zanoteliStimulusNames)
+            % Check if obj is properly constructed
+            if isempty(obj.inPath) 
+                error('EEG data file path not specified.'); 
+            end 
+            
+            subject_id = cell2mat(obj.zanoteliSubjects(zanoteliSubjectIndex));
+
+            % Build filepath and load
+            % data = load(filepath); 
+            data = load([obj.inPath subject_id zanoteliStimulusNames], ...
+                'x','Fs','binsM','freqEstim');
+            
+            if isfield(data, 'x') 
+                obj.signals = data.x; 
+                obj.totalSamples = size(obj.signals,2)*size(obj.signals,1);
+            else 
+                error('The EEG data file must contain variable "x".'); 
+            end 
+
+            if isfield(data, 'Fs') 
+                obj.fs = data.Fs;
+                obj.nfft = obj.fs;
+                obj.nBins = floor(obj.fs/2)+1;
+            else 
+                error('The EEG data file must contain variable "x".'); 
+            end
+
+        end
+
+        function obj = loadBulkEEGData(obj)
+            obj.groupSignals = cell(numel(obj.selectedZanoteliStimuli), ...
+                                    numel(obj.selectedZanoteliSubjects));
+            
+            for stimulusIndex = obj.selectedZanoteliStimuli
+                current_stim = cell2mat(obj.zanoteliStimulusNames(stimulusIndex));
+
+                for subjectIndex = obj.selectedZanoteliSubjects
+                    obj = obj.loadEEGData(subjectIndex, current_stim);
+                    obj.groupSignals{stimulusIndex,subjectIndex} = obj.signals;
+                end
+            end
+        end        
+
+        function obj = genSimulatedSignals(obj,p)
+            arguments
+                obj
+                p.duration = obj.duration
+            end
+            % genSimulatedSignals generates simulated EEG signals (noise + sinusoidal signal). 
+            % Example test usage:
+            % dtl = DataLoader('sim');
+            % stem(abs(dtl.SIGNALS(:,1,1)))
+            % hold on
+            % stem(dtl.signalFrequencies,abs(dtl.SIGNALS(dtl.signalFrequencies,1,1)),...
+            % 'MarkerFaceColor','red',...
+            % 'MarkerEdgeColor','red')
+
+            obj.nChannels = numel(obj.channels);
+            obj.totalSamples = obj.fs * p.duration * obj.nChannels; 
+            t = (0:obj.totalSamples-1) / obj.fs;     
+        
+            obj.signals = 0;
+            for i = 1:numel(obj.signalFrequencies)
+                fo = obj.signalFrequencies(i)-1; 
+                % fo subtracted by one, such that FFT bin for frequency 
+                % will match the frequency because MATLAB index starts at 1
+
+                obj.signals = obj.signals+sin(2*pi*fo*t);
+            end
+           
+            obj.signals = reshape(obj.signals, [obj.fs, p.duration, obj.nChannels]);  
+            for channel = 1:obj.nChannels
+                for epoch = 1:p.duration
+
+                    x = awgn( ... % add white gaussian noise
+                            obj.signals(:,epoch,channel), ... % to this section of signal
+                            obj.SNRfun()-rand()*sqrt(i),'measured','db')'; % with this SNR in measured dB
+
+                    % Scale to uV
+                    obj.signals(:,epoch,channel)  = (10^-6) * x;  
+                end
+            end
+
+        end
+
+        function obj = genBulkSim(obj,p)
+            arguments
+                obj
+
+                p.groupNoiseMean = obj.groupNoiseMean
+                p.groupNoiseStd  = obj.groupNoiseStd
+
+            end
+
+            obj.groupSignals = cell(numel(p.groupNoiseMean), numel(p.groupNoiseStd));
+            
+            for noiseMean_idx = 1:numel(p.groupNoiseMean)
+                for noiseVar_idx = 1:numel(p.groupNoiseStd)
+                    current_noiseMean = p.groupNoiseMean(noiseMean_idx);
+                    current_noiseVar = p.groupNoiseStd(noiseVar_idx);
+
+                    obj = obj.resetSNRfun(current_noiseMean, current_noiseVar);
+                    obj = obj.genSimulatedSignals();
+
+                    obj.groupSignals{noiseMean_idx,noiseVar_idx} = obj.signals;
+
+                end
+            end
+            obj.groupNoiseMean = p.groupNoiseMean;
+            obj.groupNoiseStd = p.groupNoiseStd;
+        end
+
+        function obj = computeFFT(obj) 
+            % computeFFT computes the FFT along each window (row-wise) and 
+            % returns only the positive frequencies. 
+            
+            obj.duration = size(obj.signals,2);
+            obj.nChannels= numel(obj.channels);
+            obj.SIGNALS = zeros(obj.nBins, obj.duration, obj.nChannels);
+
+            for channel = obj.channels
+                for epoch = 1:obj.duration
+                    temp = fft(squeeze(obj.signals(:,epoch,channel)),obj.nfft, 1); 
+                    obj.SIGNALS(:,epoch,channel) = temp(1:obj.nBins); 
+                end
+            end
+
+        end
+
+        function obj = computeBulkFFTs(obj,p)
+            arguments
+                obj
+                
+                p.mode = 'exp';
+            end
+
+            
+            if matches(p.mode(1:3),"sim", IgnoreCase=true)
+                for noiseMean_idx = 1:numel(obj.groupNoiseMean)
+                    for noiseVar_idx = 1:numel(obj.groupNoiseStd)
+
+                        obj.signals = cell2mat(obj.groupSignals(noiseMean_idx,noiseVar_idx));
+    
+                        obj = obj.computeFFT();
+                        obj.groupSIGNALS{noiseMean_idx,noiseVar_idx} = obj.SIGNALS;
+    
+                    end
+                end
+
+            elseif matches(obj.mode(1:3),"exp", IgnoreCase=true)
+                obj.groupSIGNALS = cell(numel(obj.selectedZanoteliStimuli), ...
+                                    numel(obj.selectedZanoteliSubjects));
+
+                for stimulusIndex = obj.selectedZanoteliStimuli
+                    for subjectIndex = obj.selectedZanoteliSubjects
+    
+                        % Reset signal and parameters
+                        obj.signals = cell2mat(obj.groupSignals(stimulusIndex,subjectIndex));
+                        obj.fs = size(obj.signals, 1);
+                        obj.nfft = obj.fs;
+                        obj.nBins = floor(obj.fs/2)+1;
+                        obj.zanoteliStimulusIndex = stimulusIndex;
+                        obj.zanoteliSubjectIndex = subjectIndex;
+    
+                        obj = obj.computeFFT();
+                        obj.groupSIGNALS{stimulusIndex,subjectIndex} = obj.SIGNALS;
+                    end
+                end
+
+            else
+                % Throw error
+                error('DataLoader mode input is invalid.'); 
+            end
+            
+        end
+
+        function obj =resetSNRfun(obj,noiseMean,noiseStd)
+            % Alguns exemplos:
+            % noise_var_mean = 2^2;
+            % noise_var = @() (noise_var_mean+ sqrt(noise_var_var)*randn(1));
+            % noise_sd = @() randi([1,45],1)/10;
+
+            % Test case:
+            % dtl = DataLoader('sim');
+            % vec = zeros(1,1e5);
+            % for i = 1:numel(vec)
+            % vec(i) = dtl.SNRfun();
+            % end
+            % histogram(vec)
+
+            obj.noiseMean = noiseMean;
+            obj.noiseStd = noiseStd;
+            obj.SNRfun = @() obj.noiseMean+obj.noiseStd()*randn(1);
+
+        end
+
+        function obj = resetExam(obj, subjectIndex,stimulusIndex)
+            obj.zanoteliSubjectIndex = subjectIndex;
+            obj.zanoteliStimulusIndex = stimulusIndex;
+            obj = obj.loadEEGData(obj.zanoteliSubjectIndex, ...
+                         cell2mat(obj.zanoteliStimulusNames(obj.zanoteliStimulusIndex)));
+            obj= obj.computeFFT();
+
+        end
+
+        function obj = resetSubject(obj, subjectIndex)
+            % TODO: add inspect exam and recompute as optional
+            obj.zanoteliSubjectIndex = subjectIndex;
+            obj = obj.loadEEGData(obj.zanoteliSubjectIndex, ...
+                         cell2mat(obj.zanoteliStimulusNames(obj.zanoteliStimulusIndex)));
+            obj= obj.computeFFT();
+
+        end
+
+        function obj = resetStimulus(obj,stimulusIndex)
+            obj.zanoteliStimulusIndex = stimulusIndex;
+            obj = obj.loadEEGData(obj.zanoteliSubjectIndex, ...
+                         cell2mat(obj.zanoteliStimulusNames(obj.zanoteliStimulusIndex)));
+            obj = obj.computeFFT();
+
+        end
+
+        function obj = resetChannels(obj,channelsIndices)
+            obj.channels = channelsIndices;
+            obj.nChannels = numel(channelsIndices);
+            obj = obj.computeFFT();
+
+        end
+
+        function obj = resetDuration(obj,newDuration)
+
+            if matches(obj.mode(1:3),"exp", IgnoreCase=true) ...
+                    && obj.zanoteliSuggestedMMax(obj.zanoteliStimulusIndex) < newDuration 
+                warning(['Desired duration is larger than Zanoteli suggestion.',... 
+                    'This might impact on some subjects lacking data on later epochs.', ...
+                    'Consider lowering exam duration.'])
+            end
+
+            obj.duration = newDuration;
+
+            if newDuration > size(obj.signals,2) 
+                if matches(obj.mode(1:3),"exp", IgnoreCase=true)
+                    error('Duration is largest than signals'' size (%s).',size(obj.signals))
+                else
+                    fprintf('\t [%s] Sim duration reset to %d.\n\n',datetime(),newDuration)
+                    obj = obj.genSimulatedSignals();
+                end
+
+            else
+                obj.signals = obj.signals(:,1:obj.duration,:);
+                
+            end            
+            
+            obj = obj.computeFFT();
+            
+        end
+
+        % Utils:
+        function age(obj)
+            fprintf('\n\t [%s] This DataLoader was built %0.2f seconds ago.\n\n', ...
+                datetime, round(toc(obj.timer),2))
+        end
+
+        function inspectExam(obj)
+            fprintf(...
+            '\n\tExam is %s stimulus on subject %s,\n\t measuring on %s for %s seconds.\n\n', ...
+                cell2mat(obj.zanoteliStimulusNames(obj.zanoteliStimulusIndex)), ...
+                cell2mat(obj.zanoteliSubjects(obj.zanoteliSubjectIndex,:)),...
+                cell2mat(obj.zanoteliLeads(1)),...
+                num2str(size(obj.signals, 2))...
+                )
+        end
+
+    end
+        
+end
+
+
+============================================================
+=== FILE START: ORDCalculator.m
+============================================================
+
+classdef ORDCalculator
+    properties
+        dataloader
+
+        MSC
+        groupMSC
+        latestMSC
+        % multiParamMSC
+
+        % Calculator Parameters
+        startWindow
+        windowStepSize
+        lastWindow
+        
+        epochs = []
+        epochs_index_metadata
+        epochs_method
+        K_stages    % total number of tests to be applied on the ORD
+        nWindows    % number of Windows (may match K, or not)
+
+        subjectIndices = [1:11];
+        stimulusIndices = [1:5];
+        channels
+
+        startWindows = [1];
+        windowStepSizes = [24 32];
+        lastWindows = [50];
+
+        % Utils
+        timer   % obj timer
+        id      % obj id
+    end
+
+    methods
+        function obj = ORDCalculator(dataloader)
+            obj.timer = tic;
+            obj.id = [num2str(keyHash(obj.timer))];
+            obj.dataloader = dataloader;
+            
+            obj.startWindow = 1;
+            obj.windowStepSize = 24;
+            obj.lastWindow = dataloader.duration;
+            % obj.epochs = obj.startWindow:obj.windowStepSize:obj.lastWindow;
+
+        end
+
+        function obj = fit_epochs(obj, p)
+             arguments
+                obj % The ORDCalculator class
+
+                % p: additional parameters, passed as Name-Value arguments
+                %    declared below, including their default values.
+                p.dataloader = obj.dataloader;
+                p.channels = obj.dataloader.channels;
+                p.nChannels = numel(obj.dataloader.channels);
+
+                p.subjectIndices = obj.subjectIndices;
+                p.stimulusIndices = obj.stimulusIndices;
+
+                p.startWindows = obj.startWindows;
+                p.windowStepSizes = obj.windowStepSizes;
+                p.lastWindows = obj.lastWindows;
+
+                % How will the index of the last window be computed?
+                p.lastWindowCalcMethod {mustBeMember(p.lastWindowCalcMethod,...
+                                    {'maxFromStart', 'maxFromLast', 'exactK', 'fromSizeType'})} = 'maxFromStart'; 
+                
+                % How will the number of samples in each window be computed?
+                p.sizeType {mustBeMember(p.sizeType,...
+                                    {'fixedSize', 'minToMax', 'minToFix', 'withResampling'})} = 'fixedSize';
+                
+                % Are epochs for a single ORD or bulk ORDs?
+                p.single_or_bulk {mustBeMember(p.single_or_bulk,{'single', 'bulk'})} = 'single'
+                p.K_stages = obj.K_stages;
+                p.nWindows = obj.nWindows;
+             end
+
+             % Make single to bulk switch automatic (may reconsider later,
+             % bad practice...!) TODO
+             if numel(p.startWindows) > 1
+                 p.single_or_bulk = 'bulk';
+             end
+
+             obj.subjectIndices = p.subjectIndices;
+             obj.stimulusIndices = p.stimulusIndices;
+
+             method = [p.single_or_bulk,'_',p.sizeType,'_',p.lastWindowCalcMethod];
+
+             switch method
+                 case 'bulk_fixedSize_maxFromStart' % zanoteli bulk
+                     % User expects all windows to be equally sized. 
+                     % User input is subjects, stimuli, stepSizes and startWindows
+                     % other params will be ignored
+
+                     % This is not quite right cell indexing allocation but
+                     % works on MATLAB... fix later! TODO
+                     obj.epochs = cell(numel(p.stimulusIndices), ...
+                                        numel(p.subjectIndices), ...
+                                        numel(p.startWindows), ...
+                                        numel(p.windowStepSizes) ...
+                                        );
+                     obj.epochs_index_metadata = {'stimulusIndices',...
+                        'subjectIndices', 'startWindows', 'windowStepSizes'};
+                     obj.epochs_method = method;
+                     
+
+                     obj.nWindows = cell(size(obj.epochs));
+                     obj.K_stages = cell(size(obj.epochs));
+
+                     for stimulus_index = p.stimulusIndices
+                         for subject_index = p.subjectIndices
+                             this_exam = cell2mat(p.dataloader.groupSignals(stimulus_index,subject_index));
+                             this_lastWindow = size(this_exam, 2);
+
+                             for this_startWindow = p.startWindows
+                                 for this_windowStepSize = p.windowStepSizes
+
+                                     this_epoch = this_startWindow:this_windowStepSize:this_lastWindow;
+                                     if numel(this_epoch) > 30 || numel(this_epoch) ==0
+                                         if numel(this_epoch)> 30
+                                            warning('skipping, large n of convs')
+                                         end
+                                         continue
+                                    
+                                     end
+                                     
+                                     obj.epochs{stimulus_index, ...
+                                         subject_index, ...
+                                         this_startWindow, ...
+                                         this_windowStepSize} = this_epoch;
+                                     
+                                     obj.nWindows{stimulus_index, ...
+                                         subject_index, ...
+                                         this_startWindow, ...
+                                         this_windowStepSize} = numel(this_epoch);
+
+                                     obj.K_stages{stimulus_index, ...
+                                         subject_index, ...
+                                         this_startWindow, ...
+                                         this_windowStepSize} = cell2mat(obj.nWindows(stimulus_index, ...
+                                                                             subject_index, ...
+                                                                             this_startWindow, ...
+                                                                             this_windowStepSize));
+                                end
+                             end
+
+                         end
+                     end
+
+                 case 'bulk_fixedSize_maxFromLast' % inverted zanoteli
+                     % User expects all windows to be equally sized. 
+                     % User input is subjects, stimuli, stepSizes and lastWindows
+                     % User may pass startWindows
+                     % other params will be ignored
+
+                     obj.epochs = cell(numel(p.stimulusIndices), ...
+                                        numel(p.subjectIndices), ...
+                                        numel(p.startWindows), ...
+                                        numel(p.windowStepSizes), ...
+                                        numel(p.lastWindows)...
+                                        );
+                     obj.epochs_index_metadata = {'subjectIndices',...
+                        'stimulusIndices', 'startWindows', ...
+                        'windowStepSizes', 'lastWindows'};
+                     obj.epochs_method = method;
+
+                     obj.nWindows = cell(size(obj.epochs));
+                     obj.K_stages = cell(size(obj.epochs));
+
+                     for stimulus_index = p.stimulusIndices
+                         for subject_index = p.subjectIndices
+                             for this_firstWindow = p.startWindows
+                                 for this_windowStepSize = p.windowStepSizes
+                                    for this_lastWindow = p.lastWindows
+                                        this_epoch = flip(p.this_lastWindow:-p.windowStepSize:this_firstWindow);
+                                 
+                                         obj.epochs{stimulus_index, ...
+                                             subject_index, ...
+                                             this_firstWindow, ...
+                                             this_windowStepSize, ...
+                                             this_lastWindow} = this_epoch;
+                                         
+                                         obj.nWindows{stimulus_index, ...
+                                             subject_index, ...
+                                             this_firstWindow, ...
+                                             this_windowStepSize, ...
+                                             this_lastWindow} = numel(this_epoch);
+
+                                         obj.K_stages{stimulus_index, ...
+                                             subject_index, ...
+                                             this_firstWindow, ...
+                                             this_windowStepSize, ...
+                                             this_lastWindow} = cell2mat(obj.nWindows(stimulus_index, ...
+                                                                         subject_index, ...
+                                                                         this_firstWindow, ...
+                                                                         this_windowStepSize, ...
+                                                                         this_lastWindow));
+                                    end
+                                 end
+                             end
+                         end
+                     end
+
+                 case 'bulk_fixedSize_exactK' % chesnaye bulk published
+                     % Requires 1 or more first windows and Ks
+                     % User expects exactly K windows, starting at defined point 
+                     % User input is subjects, stimuli and K
+                     % User may pass startWindows
+                     % other params will be ignored
+
+                     obj.epochs = cell(numel(p.stimulusIndices), ...
+                                         numel(p.subjectIndices), ...
+                                         numel(p.startWindows), ...
+                                         numel(p.K_stages));
+                     obj.epochs_index_metadata = {'subjectIndices',...
+                        'stimulusIndices', 'startWindows','K_stages'};
+                     obj.epochs_method = method;
+
+                     obj.nWindows = obj.epochs;
+                     
+                     mode = obj.dataloader.mode;
+                    if matches(mode(1:3),"sim", IgnoreCase=true)
+                        
+                        for noiseMean_idx = 1:numel(obj.dataloader.groupNoiseMean)
+                            for noiseVar_idx = 1:numel(obj.dataloader.groupNoiseStd)
+            
+                                this_exam = cell2mat(p.dataloader.groupSignals(noiseMean_idx,noiseVar_idx));
+                                this_lastWindow = size(this_exam, 2);
+                                 for this_firstWindow = p.startWindows %!
+                                     for this_K = p.K_stages
+                                         
+                                         obj.epochs{noiseMean_idx, ...
+                                             noiseVar_idx, ...
+                                             this_firstWindow, ...
+                                             this_K} = ceil(linspace(this_firstWindow,this_lastWindow,this_K));
+                                         
+                                         obj.nWindows{noiseMean_idx, ...
+                                             noiseVar_idx, ...
+                                             this_firstWindow, ...
+                                             this_K} = this_K;
+    
+                                         obj.K_stages{noiseMean_idx, ...
+                                             noiseVar_idx, ...
+                                             this_firstWindow, ...
+                                             this_K} = this_K;
+                                     end
+                                 end
+                            end
+                        end
+        
+                    elseif matches(mode(1:3),"exp", IgnoreCase=true)
+                        for stimulus_index = p.stimulusIndices
+                             for subject_index = p.subjectIndices
+                                 this_exam = cell2mat(p.dataloader.groupSignals(stimulus_index,subject_index));
+                                 this_lastWindow = size(this_exam, 2);
+                                 
+                                 for this_firstWindow = p.startWindows %!
+                                     for this_K = p.K_stages
+                                         
+                                         obj.epochs{stimulus_index, ...
+                                             subject_index, ...
+                                             this_firstWindow, ...
+                                             this_K} = ceil(linspace(this_firstWindow,this_lastWindow,this_K));
+                                         
+                                         obj.nWindows{stimulus_index, ...
+                                             subject_index, ...
+                                             this_firstWindow, ...
+                                             this_K} = this_K;
+    
+                                         obj.K_stages{stimulus_index, ...
+                                             subject_index, ...
+                                             this_firstWindow, ...
+                                             this_K} = this_K;
+                                     end
+                                 end
+                             end
+                         end
+        
+                    else
+                        % Throw error
+                        error('DataLoader mode input is invalid.'); 
+                    end
+
+
+                 case 'bulk_fizedSize_fromSizeType' % chesnaye bulk max tests
+                     % User expects all windows to be equally sized. 
+                     % User input is subjects, stimuli and stepSizes
+                     % User may pass startWindows
+                     % other params will be ignored
+                     obj.epochs = cell(numel(p.stimulusIndices), ...
+                                         numel(p.subjectIndices), ...
+                                         numel(p.startWindows), ...
+                                         numel(p.windowStepSizes));
+
+                     obj.epochs_index_metadata = {'subjectIndices',...
+                        'stimulusIndices', 'startWindows',...
+                        'windowStepSizes'};
+                     obj.epochs_method = method;
+
+                     obj.nWindows = obj.epochs;
+                     obj.K_stages = obj.epochs;
+
+                     for stimulus_index = p.stimulusIndices
+                         for subject_index = p.subjectIndices
+                             this_exam = cell2mat(p.dataloader.groupSignals(stimulus_index,subject_index));    
+                             this_lastWindow = size(this_exam, 2);
+    
+                             for this_firstWindow = p.startWindows %!    
+                                 for this_windowStepSize = p.windowStepSizes
+
+                                     this_epoch = this_firstWindow:this_windowStepSize:this_lastWindow;
+
+                                     obj.epochs{stimulus_index, ...
+                                         subject_index, ...
+                                         this_firstWindow, ...
+                                         this_windowStepSize} = this_epoch;
+                                    
+                                     obj.nWindows{stimulus_index, ...
+                                         subject_index, ...
+                                         this_firstWindow, ...
+                                         this_windowStepSize} = numel(this_epoch);
+
+                                     obj.K_stages{stimulus_index, ...
+                                         subject_index, ...
+                                         this_firstWindow, ...
+                                         this_windowStepSize} = cell2mat(obj.nWindows(stimulus_index, ...
+                                                                         subject_index, ...
+                                                                         this_firstWindow, ...
+                                                                         this_windowStepSize));
+                                 end
+                             end
+                         end
+                     end
+
+
+                 case 'single_fixedSize_maxFromStart' % zanoteli single
+                    obj.epochs = p.startWindows:p.windowStepSizes:p.lastWindows; 
+                    obj.epochs_index_metadata = 'single-exam';
+                    obj.epochs_method = method;
+                    obj.nWindows = numel(obj.epochs)-1;
+                    obj.K_stages = obj.nWindows;
+
+                 case 'single_fixedSize_fromSizeType' % chesnaye single
+                    obj.epochs = ceil(linspace(p.startWindows,p.lastWindows,p.K_stages));
+                    obj.epochs_index_metadata = 'single-exam';
+                    obj.epochs_method = method;
+                    obj.nWindows = p.K_stages;
+                    obj.K_stages = p.K_stages;
+
+                 otherwise
+                     error('This sizeType-lastWindowCalcMethod method pair was not implemented yet.')
+             end
+             
+        end
+
+        function obj = compute_msc(obj, p)
+            arguments
+                obj % The ORDCalculator class
+
+                % p: additional parameters, passed as Name-Value arguments
+                %    declared below, including their default values.
+                p.dataloader = obj.dataloader;
+                p.channels = obj.dataloader.channels;
+                p.nChannels = numel(obj.dataloader.channels);
+
+                p.startWindow = obj.startWindow;
+                p.windowStepSize = obj.windowStepSize;
+                p.lastWindow = obj.lastWindow;
+                
+                p.epochs = obj.epochs;
+
+                % epochCalcMethod define how
+                p.epochCalcMethod  {mustBeMember(p.epochCalcMethod,...
+                                    {'zanoteli','chesnaye'})}  = 'zanoteli'
+                p.nWindows = obj.nWindows;
+                p.K_stages = obj.K_stages;
+                                
+            end
+
+            if isempty(p.epochs)
+                switch p.epochCalcMethod
+                    case 'zanoteli'
+                        % obj.epochs = p.startWindow:p.windowStepSize:p.lastWindow;
+                        % p.nWindows = numel(obj.epochs)-1;
+                        % p.K_stages = p.nWindows;
+                        p.lastWindowCalcMethod = 'maxFromStart';
+                        p.sizeType = 'fixedSize';
+    
+                    case 'chesnaye'    
+                        % obj.epochs = ceil(linspace(p.startWindow,p.lastWindow,p.K_stages));
+                        % p.nWindows = p.K_stages;
+                        p.lastWindowCalcMethod = 'fromSizeType';
+                        p.sizeType = 'fixedSize';
+                end
+
+                obj = obj.fit_epochs( ...
+                    lastWindowCalcMethod=p.lastWindowCalcMethod, ...
+                    sizeType = p.sizeType, ...
+                    startWindows = p.startWindow, ...
+                    windowStepSizes = p.windowStepSize,...
+                    lastWindows = p.lastWindow,...
+                    K_stages = p.K_stages...
+                    );
+                
+                p.nWindows = obj.nWindows;
+                p.K_stages = obj.K_stages;
+                p.epochs = obj.epochs;
+
+            end
+            
+            % IS THIS THE CORRECT/BEST PRACTICE ACCESS??
+            Y  = p.dataloader.SIGNALS;           
+            obj.MSC = zeros([p.dataloader.nBins, p.nWindows, p.nChannels]);
+
+            for channel = p.channels
+                for epoch_index = 1:p.nWindows-1
+                    epochStart = p.epochs(epoch_index);
+
+                    epochEnd = p.epochs(epoch_index+1)-1;
+                    this_windowStepSize = epochEnd - epochStart+1;
+
+                    current_epoch = squeeze(Y(:,epochStart:epochEnd,channel));
+                    
+                    obj = obj.zanotelli_msc_fft(current_epoch, this_windowStepSize);
+                    obj.MSC(:, epoch_index, channel) = obj.latestMSC;
+                end
+            end
+
+        end
+
+
+        % STILL UNDER DEVELOPMENT
+        function obj = bulk_compute_msc(obj,p)
+            arguments
+                obj % The ORDCalculator class
+
+                % p: additional parameters, passed as Name-Value arguments
+                %    declared below, including their default values.
+                p.dataloader = obj.dataloader;
+                p.channels = obj.dataloader.channels;
+                p.nChannels = numel(obj.dataloader.channels);
+
+                % parameters for exam reload (should this be here?)
+                p.subjectIndices = obj.subjectIndices;
+                p.stimulusIndices = obj.stimulusIndices; 
+                p.epochs = obj.epochs;
+                                
+            end
+            
+            mode = obj.dataloader.mode;
+            if matches(mode(1:3),"sim", IgnoreCase=true)
+                % obj.parameterizedMSC
+                obj.groupMSC = cell(size(p.epochs));
+                obj.channels = p.channels;
+                for noiseMean_idx = 1:numel(obj.dataloader.groupNoiseMean)
+                    for noiseVar_idx = 1:numel(obj.dataloader.groupNoiseStd)
+                        selected_epochs = p.epochs(noiseMean_idx, noiseVar_idx,:);
+                        
+                        for params_idx = 1:numel(selected_epochs)
+                            if ~isempty(cell2mat(selected_epochs(params_idx)))
+                
+                            current_epoch = cell2mat(selected_epochs(params_idx));
+
+                            epoch_idx = sub2ind(size(obj.epochs), ...
+                                noiseMean_idx, noiseVar_idx, params_idx );
+
+                            p.nWindows = cell2mat(obj.nWindows(epoch_idx));
+
+                            p.dataloader.SIGNALS = cell2mat(p.dataloader.groupSIGNALS(noiseMean_idx,noiseVar_idx));
+                            p.dataloader.nBins = size(p.dataloader.SIGNALS, 1);
+
+                            obj = obj.compute_msc( ...
+                                    dataloader = p.dataloader,...    
+                                    channels = p.channels,...
+                                    nChannels = p.nChannels, ...
+                                    nWindows = p.nWindows, ...
+                                    epochs = current_epoch ...
+                                    );
+
+                            obj.groupMSC{epoch_idx} = obj.MSC;
+
+
+                            end 
+                        end
+                    end
+                end
+
+            elseif matches(mode(1:3),"exp", IgnoreCase=true)
+                for stimulus_index = p.stimulusIndices
+    
+                    % obj.parameterizedMSC
+                    obj.groupMSC = cell(size(p.epochs));
+                    obj.channels = p.channels;
+                   for stimulusIndex = p.stimulusIndices
+                        for subjectIndex = p.subjectIndices
+                            selected_epochs = p.epochs(stimulusIndex, subjectIndex,:);
+        
+                            for params_idx = 1:numel(selected_epochs)
+                                if ~isempty(cell2mat(selected_epochs(params_idx)))
+        
+                                    current_epoch = cell2mat(selected_epochs(params_idx));
+        
+                                    epoch_idx = sub2ind(size(obj.epochs), ...
+                                        stimulusIndex, subjectIndex, params_idx );
+        
+                                    p.nWindows = cell2mat(obj.nWindows(epoch_idx));
+        
+                                    p.dataloader.SIGNALS = cell2mat(p.dataloader.groupSIGNALS(stimulusIndex,subjectIndex));
+                                    p.dataloader.nBins = size(p.dataloader.SIGNALS, 1);
+        
+                                    obj = obj.compute_msc( ...
+                                            dataloader = p.dataloader,...    
+                                            channels = p.channels,...
+                                            nChannels = p.nChannels, ...
+                                            nWindows = p.nWindows, ...
+                                            epochs = current_epoch ...
+                                            );
+        
+                                    obj.groupMSC{epoch_idx} = obj.MSC;
+        
+        
+                                end 
+                            end
+                        end
+                   end
+                end
+            end
+
+        end
+
+        function obj = compute_msc_on_all_channels(obj,varargin)
+            if nargin>1
+                obj.windowStepSize = varargin{1};
+            end
+
+            Y  = obj.dataloader.SIGNALS;            
+
+            % Full MSC matrix is nBins x M x nChannels
+            obj.nWindows = floor((size(Y,2)-1)/obj.windowStepSize);
+            obj.epochs = obj.startWindow:obj.windowStepSize:obj.lastWindow;
+            obj.MSC = zeros([obj.dataloader.nBins, obj.nWindows, ...
+                                    obj.dataloader.nChannels]);
+            
+            for channel = obj.dataloader.channels
+                for window_index = 1:numel(obj.epochs)-1
+                    epochStart = obj.epochs(window_index);
+                    epochEnd = obj.epochs(window_index+1)-1;                     
+                
+                    current_epoch = squeeze(Y(:,epochStart:epochEnd,channel));
+    
+                    obj = obj.zanotelli_msc_fft(current_epoch, obj.windowStepSize);
+                    obj.MSC(:, window_index, channel) = obj.latestMSC;
+                end
+            end
+        end
+                
+
+        function obj = zanotelli_msc_fft(obj,Y,M)
+            if (size(Y,2) ~= M)
+                error('Tamanho da janela diferente'); 
+            end
+
+            % y = y(1:tamanho_janela*M,1); 
+            % %dividir em janela; 
+            % y =reshape(y,tamanho_janela,M); 
+            % 
+            % %aplicar a fft; 
+            % Y =fft(reshape(y,tamanho_janela,M)); %
+            
+            %MSC
+            obj.latestMSC =  abs(sum(Y,2)).^2./(M*sum(abs(Y).^2,2));
+        end
+
+
+        function age(obj)
+            fprintf( ...
+                '\n\t [%s] This ORDCalculator was built %0.2f seconds ago.\n\n', ...
+                datetime, round(toc(obj.timer),2))
+        end
+
+    end
+    
+end
+
+
+============================================================
+=== FILE START: ORDTester.m
+============================================================
+
+classdef ORDTester 
+    properties
+        % Test Parameters     
+        desired_alpha
+        corrigir_alpha
+        stageAlphas 
+        stageGammas 
+        previous_cgst_thresholds
+        TP
+        TN
+        FP
+        FN
+
+        groupTP
+        groupTN
+        groupFP
+        groupFN
+
+        lastExam
+
+        
+        groupStageAlphas % stageAlphas{stimulus,subject,epoch} -> stageAlphas(K)
+        groupStageGammas % groupStageGammas{stimulus,subject,epoch} -> stageGammas(K)
+
+        signalFrequencies = [82    84    86    88    90    92    94    96];
+        noiseFrequencies = [];
+        allTestFrequencies
+        nTestFrequencies
+        noiseMask
+        noiseFlag
+
+        % Outputs
+        groupDecisions
+        decisions
+        time
+
+        % Exam/ORD data
+        epochs = []
+        epochs_index_metadata
+        epochs_method
+        K_stages    % total number of tests to be applied on the ORD
+        nWindows    % number of Windows (may match K, or not)
+
+        % Esses já existem no ORDCalculator: 
+        % (deveria estar aqui?)
+        subjectIndices = [1:11];
+        stimulusIndices = [1:5];
+        startWindows = [1];
+        windowStepSizes = [24 32];
+        lastWindows = [50];
+        
+
+        % (bad practice, fix later)
+        dataloader
+        ord_calculator
+        
+        %debugging features
+        latest_stim
+        latest_subj
+        latest_epoch_idx
+        latest_windowSize
+        latest_K
+
+        % Utils
+        timer   % obj timer
+        id      % obj id
+    end
+
+
+    methods
+        function obj = ORDTester(ord_calculator,p)
+            arguments
+                ord_calculator
+
+                % Optional inputs
+                p.dataloader = [];
+                p.K_stages = [];
+                p.desired_alpha = 0.05;              
+
+            end
+
+            obj.timer = tic;
+            obj.id = [num2str(keyHash(obj.timer))];
+            obj.ord_calculator = ord_calculator;
+            obj.desired_alpha = p.desired_alpha;
+
+            if isempty(p.K_stages)
+                p.K_stages = ord_calculator.K_stages;
+            end
+
+            if isa(p.dataloader, 'double')
+                obj.dataloader = obj.ord_calculator.dataloader;
+            else
+                obj.dataloader = p.dataloader;
+            end
+
+            % obj.groupMSC = obj.ord_calculator.groupMSC;
+
+            obj.signalFrequencies = obj.dataloader.signalFrequencies;
+            obj.noiseFrequencies = obj.dataloader.noiseFrequencies;
+            
+            obj.allTestFrequencies = [obj.signalFrequencies, sort(obj.noiseFrequencies)];
+            obj.nTestFrequencies = numel(obj.allTestFrequencies);
+            obj.noiseFlag = numel(obj.signalFrequencies)+1; 
+            obj.noiseMask = 1:obj.nTestFrequencies > obj.noiseFlag;
+
+            obj.epochs = obj.ord_calculator.epochs;
+            obj.epochs_index_metadata = obj.ord_calculator.epochs_index_metadata;
+            obj.epochs_method = obj.ord_calculator.epochs_method;
+            obj.K_stages    = obj.ord_calculator.K_stages;
+            obj.nWindows    = obj.ord_calculator.nWindows; 
+
+            obj.stimulusIndices = obj.dataloader.selectedZanoteliStimuli;
+            obj.subjectIndices = obj.dataloader.selectedZanoteliSubjects;
+            
+            obj.previous_cgst_thresholds = cell(obj.dataloader.duration+1, ...
+                max(cell2mat(obj.ord_calculator.K_stages(:)))+1);
+        end
+
+        function obj = compute_beta_cgst_thresholds(obj)
+            warning('Test pending')
+
+            obj.groupStageAlphas = cell(size(obj.epochs));
+            obj.groupStageGammas = cell(size(obj.epochs));
+
+            for stimulusIndex = obj.stimulusIndices
+                for subjectIndex = obj.subjectIndices
+                    selected_epochs = obj.epochs(stimulusIndex, subjectIndex,:);
+
+                    for params_idx = 1:numel(selected_epochs)
+                        if ~isempty(cell2mat(selected_epochs(params_idx)))
+
+                            epoch_idx = sub2ind(size(obj.epochs), ...
+                                stimulusIndex, subjectIndex, params_idx );
+
+                            p.nWindows = cell2mat(obj.nWindows(epoch_idx));
+                            p.K_stages = cell2mat(obj.K_stages(epoch_idx));
+                            
+                            M = p.nWindows;
+                            K = p.K_stages;
+                            
+                            Mmax = K*M;
+                            Mstep = p.nWindows;
+                            Mmin = min(current_epoch,[],'all');
+                            
+                            % [alfa_corrigido,~,~,~] =funcao_NDC_alfaCorrigido_Mmax(1e4,Mmax,obj.desired_alpha,obj.desired_alpha)
+                            % obj = obj.zanotelli_adjust_FP( ...
+                            %     Mmax = Mmax,...
+                            %     Mstep = Mstep, ...
+                            %     Mmin = Mmin);
+
+                            obj = obj.single_exam_beta_cgst_threshold(M,K, ...
+                                corrigir_alpha = obj.corrigir_alpha ,...
+                                Mmax = Mmax,...
+                                Mstep = Mstep, ...
+                                Mmin = Mmin);
+                            % obj = obj.patient_beta_cgst_threshold(M,K);
+                            
+                            obj.groupStageAlphas{epoch_idx} = obj.stageAlphas;
+                            obj.groupStageGammas{epoch_idx} = obj.stageGammas;
+
+                        end
+                    end
+                end
+            end
+        end
+
+        
+        
+        function obj = single_exam_beta_cgst_threshold(obj,M,K,p)
+            arguments
+                obj
+                M
+                K
+
+                p.corrigir_alpha = obj.corrigir_alpha
+                p.Mmin
+                p.Mstep
+                p.Mmax
+                
+            end
+            
+    
+            if M<=size(obj.previous_cgst_thresholds,1) ...
+                    && K<=size(obj.previous_cgst_thresholds,2)
+
+                check_previous = cell2mat(obj.previous_cgst_thresholds(M,K));
+                if ~isempty(check_previous)
+                    obj.stageAlphas = check_previous(1,:);
+                    obj.stageGammas = check_previous(2,:);
+                    return
+                end
+            end
+
+            if p.corrigir_alpha ~= 0
+                obj = obj.zanotelli_adjust_FP( Mmax = p.Mmax,...
+                                Mstep = p.Mstep, Mmin = p.Mmin);
+            end
+            
+            alpha           = obj.desired_alpha;                        
+
+            Alpha_k         = ones(1,K)*(alpha/K);    
+            Gamma_k         = ((1-alpha)/K).*ones(1,K);
+            Resolution      = (1/0.00001); %(1/0.0001);                 
+            Xvalues         = 0:1/Resolution:1;            
+            Null         	= betapdf(Xvalues, 1, M-1);
+            Null            = Null/sum(Null);            
+            Chi2_Norm       = Null/sum(Null);             
+         
+            k               = 1;                           
+            aThresholds(k)	= 1 - Alpha_k(k).^(1./(M-1));  
+            gThresholds(k)	= 1-(1- Gamma_k(k)).^(1./(M-1));
+            TruncInd_Ra      = round(aThresholds(k)*Resolution);
+            TruncInd_Rg      = round(gThresholds(k)*Resolution);           
+            
+            for k = 2:K
+                NullTrunc                   = Null;                                                
+                NullTrunc(TruncInd_Ra:end)  = zeros(1, length(NullTrunc(TruncInd_Ra:end)));    
+                NullTrunc(1:TruncInd_Rg)    = zeros(1, length(NullTrunc(1:TruncInd_Rg)));
+                
+                Null2                       = conv(Chi2_Norm, NullTrunc);   
+                Null2                       = Null2 / (sum(Null2) / (1 - sum(Gamma_k(1:(k-1))) - sum(Alpha_k(1:(k-1)))));
+        
+                TruncInd_Ra                 = ORDTester.findIndex(Null2, sum(Null2) - Alpha_k(k)); 
+                aThresholds(k)              = TruncInd_Ra/Resolution;  
+                TruncInd_Rg                 = ORDTester.findIndex(Null2, Gamma_k(k), 1);
+                gThresholds(k)              = TruncInd_Rg/Resolution;
+                Null                        = Null2; 
+            end   
+
+
+            obj.stageAlphas = aThresholds;
+            obj.stageGammas = gThresholds;
+            obj.previous_cgst_thresholds{M,K} = [aThresholds;gThresholds];
+        end
+
+        function obj = patient_beta_cgst_threshold(obj,M,K)
+            
+            alpha           = obj.desired_alpha;                        
+
+            Alpha_k         = ones(1,K)*(alpha/K);    
+            % Gamma_k         = ((1-alpha)/K).*ones(1,K);
+            % x = 2/(K*(K+1));
+            % sequence =-alpha + x * (1:K);
+            % Gamma_k = flip(sequence);
+            % Gamma_k = [(1-alpha)*0.80/(K-3)*ones(1,K-3) ((1-alpha)*0.20/3)*ones(1,3)];
+            % Gamma_k = [(1-alpha)*0.99/(K-3)*ones(1,K-3) ((1-alpha)*0.01/3)*ones(1,3)];
+
+            n=3;
+            pct = 0.70;
+            Gamma_k = [(1-alpha)*pct/(K-n)*ones(1,K-n) ((1-alpha)*(1-pct)/3)*ones(1,n)];            
+
+            Resolution      = (1/0.00001); %(1/0.0001);                 
+            Xvalues         = 0:1/Resolution:1;            
+            Null         	= betapdf(Xvalues, 1, M-1);
+            Null            = Null/sum(Null);            
+            Chi2_Norm       = Null/sum(Null);             
+         
+            k               = 1;                           
+            aThresholds(k)	= 1 - Alpha_k(k).^(1./(M-1));  
+            gThresholds(k)	= 1-(1- Gamma_k(k)).^(1./(M-1));
+            TruncInd_Ra      = round(aThresholds(k)*Resolution);
+            TruncInd_Rg      = round(gThresholds(k)*Resolution);           
+            
+            for k = 2:K
+                NullTrunc                   = Null;                                                
+                NullTrunc(TruncInd_Ra:end)  = zeros(1, length(NullTrunc(TruncInd_Ra:end)));    
+                NullTrunc(1:TruncInd_Rg)    = zeros(1, length(NullTrunc(1:TruncInd_Rg)));
+                
+                Null2                       = conv(Chi2_Norm, NullTrunc);   
+                Null2                       = Null2 / (sum(Null2) / (1 - sum(Gamma_k(1:(k-1))) - sum(Alpha_k(1:(k-1)))));
+        
+                TruncInd_Ra                 = ORDTester.findIndex(Null2, sum(Null2) - Alpha_k(k)); 
+                aThresholds(k)              = TruncInd_Ra/Resolution;  
+                TruncInd_Rg                 = ORDTester.findIndex(Null2, Gamma_k(k), 1);
+                gThresholds(k)              = TruncInd_Rg/Resolution;
+                Null                        = Null2; 
+            end   
+
+
+            obj.stageAlphas = aThresholds;
+            obj.stageGammas = gThresholds;
+        end
+
+
+        function [p,obj]  = validateDetectionThresholds(obj, p)
+            arguments
+                obj
+
+                p.dataloader
+                p.K_stages = 5
+                p.SNRmean = 5
+                p.SNRvar = 0.01
+                p.duration = 50
+            end
+
+
+            p.dataloader = DataLoader('sim').resetSNRfun(p.SNRmean, p.SNRvar);
+            p.dataloader = p.dataloader.genSimulatedSignals(duration = p.duration);
+
+            p.ord_calculator = ORDCalculator(p.dataloader.computeFFT());
+            p.ord_calculator = p.ord_calculator.compute_msc( ...
+                K_stages= p.K_stages, ...
+                epochCalcMethod='chesnaye', ...
+                startWindow=1);
+
+            p.epochs = p.ord_calculator.epochs;
+            obj.decisions = zeros(size(p.ord_calculator.MSC));
+            p.allTestFrequencies = [p.dataloader.signalFrequencies, ...
+                sort(p.dataloader.noiseFrequencies)];
+
+            M = p.epochs(end)-p.epochs(end-1)+1;
+            obj = obj.single_exam_beta_cgst_threshold(M, p.K_stages);
+            obj = obj.compute_beta_cgst_decisions( ...
+                allTestFrequencies=p.allTestFrequencies, ...
+                ord_calculator=p.ord_calculator);
+        end
+    
+        function obj = compute_bulk_beta_cgst_decisions(obj,p)
+            arguments
+                obj % The ORDCalculator class
+
+                % p: additional parameters, passed as Name-Value arguments
+                %    declared below, including their default values.
+                p.dataloader = obj.dataloader;
+                p.channels = obj.dataloader.channels;
+                p.nChannels = numel(obj.dataloader.channels);
+
+                % parameters for exam reload (should this be here?)
+                p.subjectIndices = obj.ord_calculator.subjectIndices;
+                p.stimulusIndices = obj.ord_calculator.stimulusIndices; 
+                p.epochs = obj.ord_calculator.epochs;
+                p.corrigir_alpha = 0;
+                                
+            end
+            % warning('Test pending')
+            
+           obj.corrigir_alpha = p.corrigir_alpha;
+            % obj.parameterizedMSC
+           obj.groupDecisions = cell(size(p.epochs));
+           obj.groupTP = cell(size(p.epochs));
+           obj.groupTN = cell(size(p.epochs));
+           obj.groupFP = cell(size(p.epochs));
+           obj.groupFN = cell(size(p.epochs));
+          
+           for stimulusIndex = p.stimulusIndices
+               obj.latest_stim = stimulusIndex;
+                            
+                for subjectIndex = p.subjectIndices
+
+                    obj.latest_subj = subjectIndex;
+
+                    selected_epochs = p.epochs(stimulusIndex, subjectIndex,:);
+
+                    for params_idx = 1:numel(selected_epochs)
+                        if ~isempty(cell2mat(selected_epochs(params_idx)))
+
+                            current_epoch = cell2mat(selected_epochs(params_idx));
+
+                            epoch_idx = sub2ind(size(obj.epochs), ...
+                                stimulusIndex, subjectIndex, params_idx );
+
+                            
+                            obj.latest_epoch_idx =  epoch_idx;      
+
+                            p.nWindows = cell2mat(obj.nWindows(epoch_idx));
+                            
+                            p.K_stages = cell2mat(obj.K_stages(epoch_idx));
+
+                            % if p.K_stages > 5
+                            %     warning('large n of convs')
+                            % end
+                            pct = fix(100*params_idx/numel(selected_epochs));
+                            if rem(pct,20)==0
+                                fprintf('\n \t [%s] %d%% of current stim/subj (%d / %d).\n', ...
+                                    datetime, pct, obj.latest_stim, obj.latest_subj)
+                                                              
+                            end
+
+                            obj.ord_calculator.MSC = cell2mat( ...
+                                obj.ord_calculator.groupMSC(stimulusIndex,subjectIndex,params_idx));
+      
+                            M = current_epoch(end) - current_epoch(end-1)+1;
+                            K = p.K_stages;
+
+                            % Mmax = size(obj.ord_calculator.MSC,2);
+                            % Mstep = p.nWindows;
+                            % Mmin = min(current_epoch,[],'all');
+                            % 
+                            % % [alfa_corrigido,~,~,~] =funcao_NDC_alfaCorrigido_Mmax(1e4,Mmax,obj.desired_alpha,obj.desired_alpha)
+                            % obj = obj.zanotelli_adjust_FP( ...
+                            %     Mmax = Mmax,...
+                            %     Mstep = Mstep, ...
+                            %     Mmin = Mmin);
+
+                            obj.latest_windowSize = M;
+                            obj.latest_K = K;
+
+                            % obj = obj.single_exam_beta_cgst_threshold(M,K);
+                            % obj = obj.patient_beta_cgst_threshold(M,K);
+                            % t = tic();
+                            Mmax = current_epoch(end);
+                            Mstep = p.nWindows;
+                            Mmin = min(current_epoch,[],'all');
+                            
+
+                            obj = obj.single_exam_beta_cgst_threshold(M,K, ...
+                                corrigir_alpha = obj.corrigir_alpha ,...
+                                Mmax = Mmax,...
+                                Mstep = Mstep, ...
+                                Mmin = Mmin);
+                            % if K>10
+                            %     disp(toc(t));
+                            % end
+
+
+                            obj = obj.compute_beta_cgst_decisions();
+
+                            obj.groupDecisions{epoch_idx} = obj.decisions;
+                            obj.groupTP{epoch_idx} = obj.TP;
+                            obj.groupTN{epoch_idx} = obj.TN;
+                            obj.groupFP{epoch_idx} = obj.FP;
+                            obj.groupFN{epoch_idx} = obj.FN;
+
+                        end 
+                    end
+                end
+           end
+        end
+
+        function obj = zanotelli_adjust_FP(obj,p)
+            arguments
+                obj
+
+                p.Mmin =1;
+                p.Mstep = 2;
+                p.nRuns  = 1000;
+                p.Mmax = 20; %número máximo de janela
+                p.alfa_teste = 0.05;
+                p.FP_desejado =0.05;
+            end
+            
+            %parâmetros defaul
+            % fs = 64;
+            tj = 32; %cada janela um segundo
+            bin = 8;
+            
+            
+            Ntotal = p.Mmax*tj; %número de pontos totais
+            
+            %Na simulação iremos estimar a aplicação do detector a cada janela
+            ord = zeros(p.nRuns,p.Mmax); %armazena os valores dos detectores a cada experimento.
+            
+            for ii = 1: p.nRuns
+                x = randn(Ntotal,1);
+                x = reshape(x,tj,p.Mmax); %dividir em janelas
+                %aplicar o detector a cada janela ------------------
+                xfft = fft(x); %aplico uma ´única vez a FFT.
+                for M = 2:p.Mmax %fazer para cada acrescimo de uma janela
+                    ord(ii,M) = msc_fft(xfft(bin,1:M),M);
+                end
+            end
+
+            Ninicial=1; 
+            [NDC,~]  = estimarNDC(Ninicial,p.alfa_teste,p.FP_desejado, ord, p.Mmin,p.Mstep, p.Mmax);
+            % NDC_minimo = NDC;
+            % NDC_minimo = 1;
+            
+            %ajustar os valores crítico
+            MM = p.Mmin:p.Mstep:p.Mmax;
+            options = optimset('MaxIter', 50);
+            cc = @(alfa) funcao_custo_v2(alfa, NDC, MM, ord, p.FP_desejado);
+            [alfa, ~] = fmincg(cc,p.alfa_teste, options);
+            obj.desired_alpha = alfa;
+
+        end
+        %     epoch = linspace()
+        %     Mmax = obj.
+        %     P = parametros_protocolo(Mmax);
+        %     alfa_corrigido = nan*ones(size(P,1),1);
+        %     cost_alfa = nan*ones(size(P,1),1);
+        % 
+        %     for ii = 1:size(P,1)
+        %         Mmin = P(ii,1);
+        %         Mstep = P(ii,2); 
+        %         Mmax = P(ii,3);
+        %         MM = Mmin:Mstep:Mmax;
+        %         disp([num2str(ii*100/size(P,1)),'%'])
+        % 
+        %         det = ord(:,MM);
+        %         alfa = 0.05;  %TAXA DE FALSO POSITIVO DE CADA TESTES
+        %         options = optimset('MaxIter', 50);
+        %         cc = @(alfa) funcao_custo(alfa ,MM, det, FP_desejado);                               
+        %         [alfa, cost] = fmincg(cc,alfa, options);
+        %         alfa_corrigido(ii) = alfa; 
+        % 
+        %         if ~isempty(cost)
+        %             cost_alfa(ii) = cost(end);
+        %         end
+        %     end
+        % end
+
+
+        function obj = compute_bulk_sim_beta_cgst_decisions(obj,p)
+           arguments
+               obj % The ORDCalculator class
+
+               % p: additional parameters, passed as Name-Value arguments
+               %    declared below, including their default values.
+               p.dataloader = obj.dataloader;
+               p.channels = obj.dataloader.channels;
+               p.nChannels = numel(obj.dataloader.channels);
+
+               % parameters for exam reload (should this be here?)
+               p.subjectIndices = obj.ord_calculator.subjectIndices;
+               p.stimulusIndices = obj.ord_calculator.stimulusIndices; 
+               p.epochs = obj.ord_calculator.epochs;
+
+               p.nWindows = obj.ord_calculator.nWindows;
+               p.K_stages = obj.ord_calculator.K_stages;
+                                
+           end
+           % warning('Test pending')
+            
+           obj.epochs = p.epochs;
+           obj.groupDecisions = cell(size(p.epochs));
+           obj.groupTP = cell(size(obj.groupDecisions));
+           obj.groupTN = cell(size(obj.groupDecisions));
+           obj.groupFP = cell(size(obj.groupDecisions));
+           obj.groupFN = cell(size(obj.groupDecisions));
+
+           for noiseMean_idx = 1:numel(obj.dataloader.groupNoiseMean)
+                for noiseVar_idx = 1:numel(obj.dataloader.groupNoiseStd)
+                    selected_epochs = p.epochs(noiseMean_idx, noiseVar_idx,:);
+                    
+                    for params_idx = 1:numel(selected_epochs)
+                        if ~isempty(cell2mat(selected_epochs(params_idx)))
+            
+                            current_epoch = cell2mat(selected_epochs(params_idx));
+        
+                            epoch_idx = sub2ind(size(p.epochs), ...
+                                noiseMean_idx, noiseVar_idx, params_idx );
+    
+                            obj.ord_calculator.MSC = cell2mat( ...
+                                obj.ord_calculator.groupMSC(noiseMean_idx,noiseVar_idx,params_idx));
+      
+                            M = current_epoch(end) - current_epoch(end-1)+1;
+                            K = cell2mat(p.K_stages(epoch_idx));
+        
+                            % t = tic()
+                            obj = obj.single_exam_beta_cgst_threshold(M,K);
+                            % if K>10
+                            %     fprintf('K = %d, took:\n',K)
+                            %     disp(toc(t));
+                            % end
+                            obj = obj.compute_beta_cgst_decisions();
+
+                            obj.groupTP{epoch_idx} = obj.TP;
+                            obj.groupTN{epoch_idx} = obj.TN;
+                            obj.groupFP{epoch_idx} = obj.FP;
+                            obj.groupFN{epoch_idx} = obj.FN;
+
+                        end 
+                    end
+                end
+           end
+        end
+
+        function obj = compute_zanoteli_ndc_decisions()
+        end
+
+        function obj = compute_bazoni_ndc_decisions()
+        end
+
+        function obj = compute_antunes_ndc_decisions()
+        end
+        
+        function obj = compute_beta_cgst_decisions(obj, p)
+            arguments
+                obj
+
+                p.channels = obj.dataloader.channels
+                p.allTestFrequencies = obj.allTestFrequencies
+                p.ord_calculator = obj.ord_calculator
+                p.noiseFlag = obj.noiseFlag
+            end
+
+            current_tests = p.ord_calculator.MSC;
+            % current_decisions = zeros(size(current_tests));
+            obj.lastExam = current_tests;%zeros(size(current_tests));
+
+            % TP = zeros(Kmax,numel(freq_bins));
+
+            obj.TP = zeros(size(obj.lastExam));
+            obj.FP = zeros(size(obj.lastExam));
+            obj.TN = zeros(size(obj.lastExam));
+            obj.FN = zeros(size(obj.lastExam));
+            
+            % TN = zeros(Kmax,numel(freq_bins));
+            % FN = zeros(Kmax,numel(freq_bins));
+
+            for channel=p.channels
+                for freq = p.allTestFrequencies
+                    % obj.lastExam(freq,:,channel) = current_tests(freq,:,channel);
+                    for k = 1:size(current_tests,2)
+                        
+        
+                        % SIGNAL
+                        if freq < p.allTestFrequencies(p.noiseFlag) && ...              % not noise
+                            sum(obj.lastExam(freq,1:k,channel)) > obj.stageAlphas(k)    % detected
+                
+                            % obj.decisions(freq,k,channel) = obj.decisions(freq,k,channel) +1;
+                            obj.TP(freq,k,channel) = obj.TP(freq,k,channel)+1;
+                            % t_decisao(k,freq) = ~sum(t_decisao(:,freq),'all');
+                    
+                        elseif freq < p.allTestFrequencies(p.noiseFlag) && ...           % not noise
+                                sum(obj.lastExam(freq,1:k,channel)) <= obj.stageGammas(k)% gave up 
+                
+                            % obj.decisions(freq,k,channel)  = obj.decisions(freq,k,channel) -1;
+                            obj.FN(freq,k,channel) = obj.FN(freq,k,channel)+1;
+                            % t_decisao(k,freq) = -1*(~sum(t_decisao(:,freq),'all'));
+                
+                        % NOISE
+                        elseif freq >= p.allTestFrequencies(p.noiseFlag) && ...          % is noise
+                                sum(obj.lastExam(freq,1:k,channel)) > obj.stageAlphas(k) % detected
+                
+                            obj.FP(freq,k,channel) = obj.FP(freq,k,channel)+1;
+                            % t_decisao(k,freq) = ~sum(t_decisao(:,freq),'all');
+                            
+                        elseif freq >= p.allTestFrequencies(p.noiseFlag) && ...           % is noise
+                                sum(obj.lastExam(freq,1:k,channel)) <= obj.stageGammas(k) % gave up
+                
+                            % obj.decisions(freq,k,channel)  = obj.decisions(freq,k,channel) +1;
+                            obj.TN(freq,k,channel) = obj.TN(freq,k,channel)+1;
+                            % t_decisao(k,freq) = -1*(~sum(t_decisao(:,freq),'all'));
+
+                        else
+                            if k==size(current_tests,2)
+                                warning('neither detection nor stop')
+                            end
+                            
+                        end
+                
+                    end
+                end
+            end
+
+        end
+
+        % function obj = compute_chesnaye_thresholds(obj)
+        %     error('Implementation pending')
+        % end
+        % 
+        % function obj = compute_zanoteli_thresholds(obj)
+        %     error('Implementation pending')
+        % end
+
+        % UTILS
+        function age(obj)
+            fprintf( ...
+                '\t [%s] This ORDTester was built %0.2f seconds ago.\n\n', ...
+                datetime, round(toc(obj.timer),2))
+        end
+
+
+    end
+
+    methods(Static)
+        function Ind = findIndex(PDF1, Goal, GetFutil)         % GetFutil = 1 if futility
+            L               = length(PDF1);
+            increment       = round(0.05*L);
+            Pos             = round(L/2);
+            S               = sum(PDF1(1:Pos));
+            increasing      = true;
+            if S>Goal
+                increasing  = false;
+            end
+            if abs(sum(PDF1(1:1))) >= Goal
+                increment   = 0;
+                Pos         = 0;
+            end
+            if sum(PDF1) <= Goal
+                increment   = 0;
+                if GetFutil
+                    Pos	= 0;        % futility threshold
+                else
+                    Pos = L;        % efficacy threshold
+                end
+            end
+            while increment>1
+                if increasing
+                    Pos = Pos+increment;
+                else
+                    Pos = Pos-increment;
+                end
+                S = sum(PDF1(1:Pos));
+                if increasing
+                    if S > Goal
+                        increment = floor(increment/2);
+                        increasing = false;
+                    end
+                else
+                    if S < Goal
+                        increment = floor(increment/2);
+                        increasing = true;
+                    end
+                end
+            end
+            Ind = Pos;
+        end
+    end
+end
+
+
+============================================================
+=== FILE START: PreProcessor.m
+============================================================
+
+classdef PreProcessor
+    % TODO: add all filters from (Antunes et al., 2016?) for further use 
+    properties
+        zanoteliGain  = 200;
+        zanoteliCut
+
+        filterFcLower;  % Lower cutoff frequency (Hz)
+        filterFcUpper;  % Upper cutoff frequency (Hz)
+        filterOrder;    % Butterworth filter order
+        fs;      
+        
+        processedSignals
+        filteredSignals
+
+        % Stores timeseries from all selected subjects and stimuli
+        groupProcessedSignals % stimulus-subject-indexed cell:
+        groupFilteredSignals  % groupSignals{stimulus,subject} -> y(sample,window,channel)
+    end
+
+    methods
+        function obj = PreProcessor()
+            obj.zanoteliCut = 0.1/obj.zanoteliGain; % for artifact removal
+        end
+
+        function obj = zanoteliPreProcessing(obj, dataloader)
+            % preprocessSignal removes the DC offset and applies a Butterworth bandpass filter.
+            % expected datastructure is signal = zeros(fs, epochs, nchannels)
+            Mmax = dataloader.zanoteliSuggestedMMax(dataloader.zanoteliStimulusIndex);
+            obj.processedSignals = zeros( ...
+                                    size(dataloader.signals,1), ...
+                                    Mmax, ...
+                                    size(dataloader.signals,3));
+
+            % TODO: remover ALTISSIMO acoplamento aqui! deveria ser
+            % interface na entrada e nao consumir o obj inteiro ou sla
+            for channel = dataloader.channels
+                % If mock needed: dataloader.signal = nan(dataloader.fs, dataloader.duration, dataloader.nChannel)
+                x = squeeze(dataloader.signals(:,:,channel));
+    
+                %1segundo de sinal 
+                nfft = dataloader.nfft;
+                 
+                %retirar componente DC por janela 
+                % (fiz isso pq no processamento em tempo real é por janela)
+                % tirar a média de cada de cada trecho - devido a remoção
+                x = x - repmat(mean(x),nfft,1); 
+                    
+                % Excluir os dois primeiros segundos do inicio da coleta 
+                x(:,1:2,:) = []; 
+                    
+                % Encontrar o valor máximo por canal 
+                Vmax = max(abs(x),[],1);
+
+                % Remover o ruído amplitude 
+                ind = Vmax > obj.zanoteliCut;
+                x = x(:,~ind);  
+
+                % Limitar o tamanho para o valor máximo. 
+                obj.processedSignals(:,:,channel) = x(:,1:Mmax);
+
+            end
+
+            % Remove DC offset
+            % obj.processedSignals = signal - mean(signal, 2);
+            % 
+            % [b, a] = butter(obj.filterOrder, ... 
+            %     [obj.filterFcLower, obj.filterFcUpper] / (obj.fs/2)); 
+            % obj.processedSignals = filtfilt(b, a, obj.processedSignals); 
+
+        end
+
+        function obj = antunesFiltering(obj, dataloader)
+            % antunesFiltering applies a Butterworth bandpass filter.
+            obj.filteredSignals = zeros(size(obj.processedSignals));
+            
+            if size(obj.processedSignals,2)<48
+                warning('Skipping filtering this exam, it has less than 48 windows!')
+                obj.filteredSignals = obj.processedSignals;
+                return
+            end
+                
+            obj.fs = size(obj.processedSignals,1);
+            obj.filterFcLower = 70;  
+            obj.filterFcUpper = obj.fs/2 - 1;       
+            obj.filterOrder   = 8;                  
+
+            for channel = dataloader.channels
+                
+                x = squeeze(obj.processedSignals(:,:,channel));
+
+                [b, a] = butter(obj.filterOrder, ...
+                    [obj.filterFcLower, obj.filterFcUpper] / (obj.fs/2)); 
+                
+                obj.filteredSignals(:,:,channel) = filtfilt(b, a, x')'; 
+
+            end
+
+        end
+
+        function obj = bulkZanoteliPreprocess(obj, dataloader)
+
+            if matches(dataloader.mode(1:3),'exp', IgnoreCase=true)
+            
+                obj.groupProcessedSignals = cell(numel(dataloader.selectedZanoteliStimuli), ...
+                                    numel(dataloader.selectedZanoteliSubjects));
+    
+                for stimulusIndex = dataloader.selectedZanoteliStimuli
+                    for subjectIndex = dataloader.selectedZanoteliSubjects
+    
+                        % Reset signal data and parameters
+                        dataloader.signals = cell2mat(dataloader.groupSignals(stimulusIndex,subjectIndex));
+                        dataloader.fs = size(dataloader.signals, 1);
+                        dataloader.nfft = dataloader.fs;
+                        dataloader.nBins = floor(dataloader.fs/2)+1;
+                        dataloader.zanoteliStimulusIndex = stimulusIndex;
+                        dataloader.zanoteliSubjectIndex = subjectIndex;
+    
+                        obj = obj.zanoteliPreProcessing(dataloader);
+    
+                        obj.groupProcessedSignals{stimulusIndex,subjectIndex} = obj.processedSignals;
+    
+                    end
+                end
+
+            elseif matches(dataloader.mode(1:3),'sim', IgnoreCase=true) 
+                
+                 obj.groupProcessedSignals = cell(numel(dataloader.selectedZanoteliStimuli), ...
+                                    numel(dataloader.selectedZanoteliSubjects));
+    
+                for stimulusIndex = dataloader.selectedZanoteliStimuli
+                    for subjectIndex = dataloader.selectedZanoteliSubjects
+    
+                        % Reset signal data and parameters
+                        dataloader.signals = cell2mat(dataloader.groupSignals(stimulusIndex,subjectIndex));
+                        dataloader.fs = size(dataloader.signals, 1);
+                        dataloader.nfft = dataloader.fs;
+                        dataloader.nBins = floor(dataloader.fs/2)+1;
+                        dataloader.zanoteliStimulusIndex = stimulusIndex;
+                        dataloader.zanoteliSubjectIndex = subjectIndex;
+    
+                        obj = obj.zanoteliPreProcessing(dataloader);
+    
+                        obj.groupProcessedSignals{stimulusIndex,subjectIndex} = obj.processedSignals;
+    
+                    end
+                end
+                
+
+            else
+                error('Invalid dataloader mode!')
+
+            end
+
+        end
+
+        function obj = bulkAntunesFilter(obj, dataloader)
+             obj.groupFilteredSignals= cell(numel(dataloader.selectedZanoteliStimuli), ...
+                                    numel(dataloader.selectedZanoteliSubjects));
+
+            for stimulusIndex = dataloader.selectedZanoteliStimuli
+                for subjectIndex = dataloader.selectedZanoteliSubjects
+
+
+                    obj.processedSignals = cell2mat(obj.groupProcessedSignals(stimulusIndex,subjectIndex));
+                    obj = obj.antunesFiltering(dataloader);
+
+                    obj.groupFilteredSignals{stimulusIndex,subjectIndex} = obj.filteredSignals;
+
+                end
+            end
+
+        end
+
+
+
+    end
+end
+
+
+============================================================
+=== FILE START: compile_all.m
+============================================================
+
+%%
+clearvars;close all; clc;
+
+data_strs = {'tester_checkpoint_1_T10_16_320_3_2025.mat',...
+'tester_checkpoint_2_T10_47_320_3_2025.mat',...
+'tester_checkpoint_3_T11_25_3520_3_2025.mat',...
+'tester_checkpoint_4_T12_10_5620_3_2025.mat',...
+'tester_checkpoint_5_T12_27_4020_3_2025.mat',...
+'tester_checkpoint_6_T12_52_1920_3_2025.mat',...
+'tester_checkpoint_7_T13_22_1620_3_2025.mat',...
+'tester_checkpoint_8_T13_51_1920_3_2025.mat'};
+
+disp(1)
+disp(datetime())
+res = load(cell2mat(data_strs(1)));
+complete_groupFP = res.tester_checkpoint.groupFP;
+
+%%
+
+all_vaz_startWindows = {[1:30 240],...
+    [31:60 240],...
+    [61:90 240],...
+    [91:120 240],...
+    [121:150 240],...
+    [151:180 240],...
+    [181:210 240],...
+    [211:239 240],...
+    };
+
+for idx = 2:numel(data_strs)
+    disp(idx)
+    disp(datetime())
+    res = load(cell2mat(data_strs(idx)));
+    % complete_groupFP(:,:,all_vaz_startWindows(idx),:) = ...
+    %     res.tester_checkpoint.groupFP(:,:,cell2mat(all_vaz_startWindows(idx)),:);
+    % 
+    % clearvars -except complete_groupFP all_vaz_startWindows data_strs
+    complete_groupFP = res.tester_checkpoint.groupFP;
+% end
+
+%%
+
+nParams = numel(complete_groupFP(1,1,:));
+nChannels = numel(1);
+tester.FP = zeros(nParams,nChannels);
+tester.FN = zeros(nParams,nChannels);
+tester.TP = zeros(nParams,nChannels);
+tester.TN = zeros(nParams,nChannels);
+
+for stimulusIndex = res.tester_checkpoint.selectedZanoteliStimuli
+    for subjectIndex = res.tester_checkpoint.selectedZanoteliSubjects
+        for channel_idx = 1:numel(1)
+            nonemptyparams_idxs = [];
+            for epoch_param_idx = 1:nParams 
+                
+                if size(tester.groupFP,1)==1
+                    exam_fp = cell2mat(complete_groupFP(1, subjectIndex, epoch_param_idx));
+                elseif size(tester.groupFP,2)==1
+                    exam_fp = cell2mat(complete_groupFP(stimulusIndex, 1, epoch_param_idx));
+                else
+                    exam_fp = cell2mat(complete_groupFP(stimulusIndex, subjectIndex, epoch_param_idx));
+                end
+
+                if ~isempty(exam_fp)
+                    % If there was a detection on any stage, 
+                    % assign 1 to that exam, and repeat for all
+                    % frequencies. Then, sum all 1s.
+                    % + Add previous results from other subjs
+                    % To compute rate (pct), divide by #freqs and #subj
+                    % 
+                    % if size(tester.groupFP,1)==1
+                    %     exam_fn = cell2mat(tester.groupFN(1, subjectIndex, epoch_param_idx));
+                    %     exam_tp = cell2mat(tester.groupTP(1, subjectIndex, epoch_param_idx));
+                    %     exam_tn = cell2mat(tester.groupTN(1, subjectIndex, epoch_param_idx));
+                    % 
+                    % elseif size(tester.groupFP,2)==1
+                    %     exam_fn = cell2mat(tester.groupFN(stimulusIndex, 1, epoch_param_idx));
+                    %     exam_tp = cell2mat(tester.groupTP(stimulusIndex, 1, epoch_param_idx));
+                    %     exam_tn = cell2mat(tester.groupTN(stimulusIndex, 1, epoch_param_idx));
+                    % 
+                    % else
+                    %     exam_fn = cell2mat(tester.groupFN(stimulusIndex, subjectIndex, epoch_param_idx));
+                    %     exam_tp = cell2mat(tester.groupTP(stimulusIndex, subjectIndex, epoch_param_idx));
+                    %     exam_tn = cell2mat(tester.groupTN(stimulusIndex, subjectIndex, epoch_param_idx));
+                    % 
+                    % end
+                    % 
+                    
+
+                    % tester.FN(epoch_param_idx, channel_idx) = ...
+                    %         sum(any(exam_fn(tester.signalFrequencies,:,channel_idx)>0,2))...
+                    %         + tester.FN(epoch_param_idx, channel_idx);
+                    % 
+                    % tester.TP(epoch_param_idx, channel_idx) = ...
+                    %         sum(any(exam_tp(tester.signalFrequencies,:,channel_idx)>0,2))...
+                    %         + tester.TP(epoch_param_idx, channel_idx);
+
+                    tester.FP(epoch_param_idx, channel_idx) = ...
+                            sum(any(exam_fp(tester.noiseFrequencies,:,channel_idx)>0,2))...
+                            + tester.FP(epoch_param_idx, channel_idx);
+
+                    % tester.TN(epoch_param_idx, channel_idx) = ...
+                    %         sum(any(exam_tn(tester.noiseFrequencies,:,channel_idx)>0,2))...
+                    %         + tester.TN(epoch_param_idx, channel_idx);
+
+                    nonemptyparams_idxs = [nonemptyparams_idxs,...
+                                            epoch_param_idx];
+                        %sub2ind(size(tester.FP), epoch_param_idx, channel_idx)];
+    
+                end
+            end
+        end
+    end
+end
+
+
+denom = numel(res.tester_checkpoint.allTestFrequencies(9:end))...
+    *numel(tester.selectedZanoteliSubjects)...
+    *numel(res.tester_checkpoint.selectedZanoteliStimuli);
+fp_rate = tester.FP/(denom)
+
+% clearvars -except all_vaz_startWindows data_strs fp_rate
+
+
+% tp_rate = tester.TP/(denom);
+
+% fn_rate = tester.FN/(denom);
+
+% tn_rate = tester.TN/(denom);
+
+% confmat = table( ...
+%     100*mean(fn_rate(nonemptyparams_idxs,single_channel)), ...
+%     100*mean(fp_rate(nonemptyparams_idxs,single_channel)), ...
+%     100*mean(tp_rate(nonemptyparams_idxs,single_channel)), ...
+%     100*mean(tn_rate(nonemptyparams_idxs,single_channel)), ...
+%     'VariableNames',{'fn','fp','tp','tn'})
+
+%%
+figure(1);
+plot(100*fp_rate(nonemptyparams_idxs,1),'.')
+
+drawnow
+end
+%%
+
+% a = 3
+% 
+% b = 1:10
+% n = rand(3);
+% g = randi([110],1,20);
+% c =[];
+% for i = b
+% 
+%     c(i) = 2*a*i;   
+%     clearvars -except a b c
+%     a = c(1)-1;
+% end
+
+
+============================================================
+=== FILE START: computeBetaThresholds.m
+============================================================
+
+function [aThresholds, gThresholds] = computeBetaThresholds(K, M, params) 
+% computeBetaThresholds calculates sequential detection and futility thresholds. 
+    % aThresholds = zeros(1, K); 
+    % gThresholds = zeros(1, K);
+    % % Evenly distribute alpha and gamma for each stage
+    % Alpha_k = ones(1, K) * (alpha / K);
+    % Gamma_k = ((1 - alpha) / K) * ones(1, K);
+    % 
+    % resolution = 1e5;
+    % Xvalues = linspace(0, 1, resolution+1);
+    % Null = betapdf(Xvalues, 1, M-1);
+    % Null = Null / sum(Null);
+    % Chi2_Norm = Null;
+    % 
+    % % Stage 1 thresholds (closed-form)
+    % aThresholds(1) = 1 - Alpha_k(1)^(1/(M-1));
+    % gThresholds(1) = 1 - (1 - Gamma_k(1))^(1/(M-1));
+    % 
+    % TruncInd_Ra = round(aThresholds(1) * resolution);
+    % TruncInd_Rg = round(gThresholds(1) * resolution);
+    % 
+    % for k = 2:K
+    %     NullTrunc = Null;
+    %     NullTrunc(TruncInd_Ra:end) = 0;
+    %     NullTrunc(1:TruncInd_Rg) = 0;
+    %     Null2 = conv(Chi2_Norm, NullTrunc);
+    %     Null2 = Null2 / sum(Null2);
+    %     cumsumNull2 = cumsum(Null2);
+    %     idx_a = find(cumsumNull2 >= (1 - Alpha_k(k)), 1, 'first');
+    %     idx_g = find(cumsumNull2 >= Gamma_k(k), 1, 'first');
+    %     aThresholds(k) = idx_a / resolution;
+    %     gThresholds(k) = idx_g / resolution;
+    %     TruncInd_Ra = idx_a;
+    %     TruncInd_Rg = idx_g;
+    %     Null = Null2;
+
+
+
+TotalAlpha      = params.alpha;                        
+Alpha_k         = ones(1,K)*(TotalAlpha/K);     
+Gamma_k         = ((1-TotalAlpha)/K).*ones(1,K);
+
+
+aThresholds  = zeros(1,K);
+gThresholds  = zeros(1,K);
+
+Resolution      = (1/0.0001);                  
+Xvalues         = 0:1/Resolution:1;            
+Null         	= betapdf(Xvalues, 1, M-1); 
+Null            = Null/sum(Null);             	
+Chi2_Norm       = Null/sum(Null);             	
+k               = 1;                            
+aThresholds(k)	= 1 - Alpha_k(k).^(1./(M-1));  
+gThresholds(k)	= 1-(1- Gamma_k(k)).^(1./(M-1));
+TruncInd_Ra      = round(aThresholds(k)*Resolution);                                         
+TruncInd_Rg      = round(gThresholds(k)*Resolution);           
+
+for k = 2:K
+    NullTrunc                   = Null;                                                     
+    NullTrunc(TruncInd_Ra:end)  = zeros(1, length(NullTrunc(TruncInd_Ra:end)));              
+    NullTrunc(1:TruncInd_Rg)    = zeros(1, length(NullTrunc(1:TruncInd_Rg)));
+    Null2                       = conv(Chi2_Norm, NullTrunc);                              
+    Null2                       = Null2 / (sum(Null2) / (1 - sum(Gamma_k(1:(k-1))) - sum(Alpha_k(1:(k-1)))));
+    TruncInd_Ra                 = findIndex(Null2, sum(Null2) - Alpha_k(k));            
+    aThresholds(k)              = TruncInd_Ra/Resolution;                                    
+    TruncInd_Rg                 = findIndex(Null2, Gamma_k(k), 1);
+    gThresholds(k)              = TruncInd_Rg/Resolution;
+    Null                        = Null2;
+end
+
+end
+
+
+============================================================
+=== FILE START: computeFFT.m
+============================================================
+
+function fftSignals = computeFFT(signals, params) 
+% computeFFT computes the FFT along each window (row-wise) and 
+% returns only the positive frequencies. 
+    fftSignals = zeros(params.nChannels, params.nBins, params.duration );
+    for channel = 1:params.nChannels
+        temp = fft(squeeze(signals(channel,:,:)),params.nfft, 1); 
+        fftSignals(channel,:,:) = temp(1:params.nBins,:); 
+    end
+end
+
+
+============================================================
+=== FILE START: computeMSC.m
+============================================================
+
+function MSCvalues = computeMSC(fftSignals, params) 
+% computeMSC calculates a simplified magnitude-squared coherence (MSC) value per stage. 
+    K = params.K;
+    totalWindows = params.duration; 
+    windowsPerStage = floor(totalWindows / K); 
+
+    % MSCvalues = zeros(1, K); 
+    MSCvalues = zeros(params.nBins,K,params.nChannels);
+
+    for k = 1:K 
+        idxStart = (k-1)*windowsPerStage + 1; 
+        idxEnd = idxStart + windowsPerStage - 1; 
+        
+        for channel = 1:params.nChannels
+            MSCvalues(:,k,channel) = msc_fft( ...
+                squeeze(fftSignals(:, idxStart:idxEnd,channel)), ...
+                windowsPerStage);
+
+        end
+    end 
+end
+
+
+============================================================
+=== FILE START: experiments_figure.m
+============================================================
+
+%% Clear workspace and initialize parameters
+clearvars; 
+close all; 
+clc;
+
+%% Test Pipeline
+dtl = DataLoader('exp','C:\Users\alexa\Desktop\Sinais_EEG\');
+ppc = PreProcessor();
+
+% -1 excludes ESP stimulus (less than 20 secs => not enough for filter)
+% Exam is ESP stimulus on subject Er,
+%  measuring on FC for 120 seconds. => cant filter if lower than 48 windows
+% random_electrode = 5;
+% random_epoch = 11;
+% random_stimulus = 6;
+% random_subject = 4;
+
+random_stimulus_fun = @() randi([1, numel(dtl.zanoteliStimulusNames)-1],1,1);
+random_electrode_fun = @() randi([1, numel(dtl.zanoteliLeads)],1,1);
+random_epoch_fun = @() randi([1, dtl.zanoteliSuggestedMMax(dtl.zanoteliStimulusIndex)],1,1);
+random_subject_fun = @() randi([1, 11],1,1);
+
+dtl.inspectExam()
+dtl = dtl.resetExam(random_subject_fun(), random_stimulus_fun());
+dtl.inspectExam()
+
+new_random_leads = dtl.channels(randi([1, 16],1,5));
+measures_from = dtl.zanoteliLeads(new_random_leads)
+dtl = dtl.resetChannels(new_random_leads);
+random_electrode_fun = @() randi([1 dtl.nChannels],1,1);
+
+random_stimulus = random_stimulus_fun();
+random_electrode = dtl.channels(random_electrode_fun());
+random_epoch = random_epoch_fun();
+random_subject = random_subject_fun();
+
+original_epoch = dtl.signals(:,random_epoch,random_electrode);
+original_freq_sample = dtl.SIGNALS(:,random_epoch,random_electrode); 
+
+ppc = ppc.zanoteliPreProcessing(dtl);
+dtl.signals = ppc.processedSignals;
+dtl = dtl.computeFFT();
+
+processed_epoch = dtl.signals(:,random_epoch,random_electrode);
+processed_freq_sample = dtl.SIGNALS(:,random_epoch,random_electrode); 
+
+ppc = ppc.antunesFiltering(dtl);
+dtl.signals = ppc.filteredSignals;
+dtl = dtl.computeFFT();
+
+filtered_epoch = dtl.signals(:,random_epoch,random_electrode);
+filtered_freq_sample = dtl.SIGNALS(:,random_epoch,random_electrode); 
+
+dtl.inspectExam()
+
+disp(dtl)
+
+%% Show Results
+lead_name = cell2mat(dtl.zanoteliLeads(random_electrode));
+random_epoch = random_epoch+2; % add 2 seconds removed from preprocessed
+exam_time = (10^-3)*(random_epoch*dtl.fs:random_epoch*dtl.fs+numel(original_epoch)-1)';
+
+
+figure(1)   
+% subplot(231)
+% subplot(221)
+% plot(exam_time,original_epoch, 'color', 0.15*[1 1 1])
+% hold on 
+% plot(exam_time,original_epoch,'.', 'color', 0.15*[1 1 1])
+% grid on 
+% xlabel('Time [s]')
+% ylabel('Voltage [V]')
+% title(['Measures Aquired on' lead_name])
+
+% subplot(232)
+% plot(exam_time,processed_epoch, 'color', 0.15*[1 1 1])
+% hold on 
+% plot(exam_time,processed_epoch,'.', 'color', 0.15*[1 1 1])
+% grid on 
+% xlabel('Time [s]')
+% ylabel('Voltage [V]')
+% title(['Processed signal from' lead_name])
+
+% subplot(233)
+figure(1)
+plot(exam_time,filtered_epoch, 'color',0.65*[1 1 1])
+hold on 
+p = plot(exam_time,filtered_epoch,'.', 'color', 0.15*[1 1 1], ...
+    'MarkerSize',10);
+grid on 
+xlabel('Time [s]')
+ylabel('Voltage [V]')
+title(['Filtered signal from ',lead_name])
+
+s = sprintf('Measures (sampled at F_s = %d Hz)', dtl.fs);
+legend(p,s)
+
+% subplot(234)
+% subplot(223)
+% stem(abs(original_freq_sample),'filled', 'color', 0.15*[1 1 1], ...
+%                                  'MarkerSize',2,'LineWidth',0.1)
+% grid on 
+% xlabel('Frequency [Hz]')
+% ylabel('Measured Power')
+% title(['PSD aquired on' lead_name])
+% xlim([-25,1.1*size(original_freq_sample,1)])
+
+% subplot(235)
+% stem(abs(processed_freq_sample),'filled', 'color', 0.15*[1 1 1], ...
+%                                  'MarkerSize',2,'LineWidth',0.1)
+% grid on 
+% xlabel('Frequency [Hz]')
+% ylabel('Measured Power')
+% title(['PSD processed from' lead_name])
+% xlim([-25,1.1*size(processed_freq_sample,1)])
+
+% subplot(236)
+figure(2)
+stem(abs(filtered_freq_sample),'filled', 'color', 0.65*[1 1 1], ...
+                                 'MarkerSize',2,'LineWidth',0.1, ...
+                                 'MarkerEdgeColor',0.15*[1 1 1])
+
+hold on
+b = stem(dtl.signalFrequencies, abs(filtered_freq_sample(dtl.signalFrequencies)), ...
+    'filled', 'color',  0.65*[1 1 1],...
+                                 'MarkerSize',3,'LineWidth',0.1, ...
+                                 'MarkerEdgeColor','b');
+
+r = stem(dtl.noiseFrequencies, abs(filtered_freq_sample(dtl.noiseFrequencies)), ...
+    'filled', 'color',  0.65*[1 1 1],...
+                                 'MarkerSize',3,'LineWidth',0.1, ...
+                                 'MarkerEdgeColor','r');
+
+legend([b,r],{'Stimulus','Noise'})
+grid on 
+xlabel('Frequency [Hz]')
+ylabel('Power Estimate')
+title(['PSD filtered from ',lead_name])
+xlim([-25,1.1*size(filtered_freq_sample,1)])
+
+
+============================================================
+=== FILE START: genSimulatedSignals.m
+============================================================
+
+function [signals, params] = genSimulatedSignals(params) 
+% genSimulatedSignals generates simulated EEG signals (noise + sinusoidal signal). 
+    duration = params.duration; % seconds 
+    nChannels = params.nChannels;
+    totalSamples = params.Fs * duration * nChannels; 
+    
+    t = (0:totalSamples-1) / params.Fs;
+    
+    % % White noise generation
+    % noise = randn(1, totalSamples);
+    % 
+    % % Sinusoidal component (e.g., 80 Hz stimulation)
+    % freqStim = 80;
+    % signal = sin(2*pi*freqStim*t);
+    % 
+    % % Adjust amplitude based on SNR (convert dB to linear scale)
+    % snr_linear = 10^(params.sim.signalSNR/20);
+    % signal = signal * snr_linear;
+    % 
+    % % Combine the noise and signal
+    % signals = noise + signal;
+    % 
+    % % For multi-channel simulation, replicate the signal (e.g., 2 channels)
+    % % signals = repmat(signals, nChannels, 1);
+    % signals = reshape(signals, [nChannels, params.Fs, duration]); 
+
+
+    signals = 0;
+    for i = 1:numel(params.signalFrequencies)
+        fo = params.signalFrequencies(i); 
+        signals = signals+sin(2*pi*fo*t);
+    end
+   
+    signals = reshape(signals, [nChannels, params.Fs, duration]);    
+    for janela = 1:duration
+        for channel = 1:nChannels
+            % Adiciona ruido gaussiano branco com SNR aleatoria 
+            noise_mean = params.sim.signalSNR; % very high = -25
+
+            % Alguns exemplos:
+            % noise_var_mean = 2^2;
+            % noise_var = @() (noise_var_mean+ sqrt(noise_var_var)*randn(1));
+            % noise_sd = @() randi([1,45],1)/10;
+
+            noise_sd = @() 1;
+            snr = @() noise_mean+noise_sd()*randn(1);
+            signals(channel,:,janela) = awgn(signals(channel,:,janela),snr(),'measured','db')';
+        end
+    end
+end
+
+
+============================================================
+=== FILE START: generate_sequence.m
+============================================================
+
+function sequence = generate_sequence(K, pattern,alpha)
+    % Generate a sequence of K numbers with specified growth pattern
+    % Pattern options: 'linear', 'exponential', 'logarithmic', 'polynomial'
+    
+    switch lower(pattern)
+        case 'linear'
+            % Linear growth: x, 2x, 3x, ... nx where n*x*(n+1)/2 = 1
+            x = 2/(K*(K+1));
+            sequence =-alpha + x * (1:K);
+            
+        case 'exponential'
+            % Exponential growth: a^1, a^2, ..., a^K where sum = 1
+            r = nth_root(1 + 1/K, K);  % Find base r such that sum(r.^[1:K]) ≈ 1
+            sequence = -alpha +r.^[1:K];
+            
+        case 'logarithmic'
+            % Logarithmic growth: log(x+1), log(x+2), ..., log(x+K)
+            % Scale factor ensures sum equals 1
+            temp = logspace(0, log10(K), K);
+            sequence = -alpha +temp ./ sum(temp);
+            
+        case 'polynomial'
+            % Polynomial growth: x^n where n increases with position
+            % Use increasing powers from 1 to K
+            temp = (1:K).^([1:K]/2);
+            sequence = -alpha +temp ./ sum(temp);
+            
+        otherwise
+            error('Invalid pattern. Choose from: linear, exponential, logarithmic, polynomial');
+    end
+    
+    % Verify sum is approximately 1
+    % assert(abs(sum(sequence) - 1) < 1e-10, 'Sum is not close enough to 1');
+end
+
+% Helper function for nth root calculation
+function result = nth_root(x, n)
+    result = exp(log(x)/n);
+end
+
+
+============================================================
+=== FILE START: loadEEGData.m
+============================================================
+
+function signals = loadEEGData(filepath) 
+% loadEEGData loads EEG data from the specified file. 
+% The file should contain a variable named 'x' representing the EEG data. 
+
+    if isempty(filepath) 
+        error('EEG data file path not specified.'); 
+    end 
+    data = load(filepath); 
+    
+    if isfield(data, 'x') 
+        signals = data.x; 
+    else 
+        error('The EEG data file must contain variable "x".'); 
+    end 
+end
+
+
+============================================================
+=== FILE START: paretoFront.m
+============================================================
+
+function [ p, idxs] = paretoFront( p )
+% Filters a set of points P according to Pareto dominance, i.e., points
+% that are dominated (both weakly and strongly) are filtered.
+%
+% Inputs: 
+% - P    : N-by-D matrix, where N is the number of points and D is the 
+%          number of elements (objectives) of each point.
+%
+% Outputs:
+% - P    : Pareto-filtered P
+% - idxs : indices of the non-dominated solutions
+%
+% Example:
+% p = [1 1 1; 2 0 1; 2 -1 1; 1, 1, 0];
+% [f, idxs] = paretoFront(p)
+%     f = [1 1 1; 2 0 1]
+%     idxs = [1; 2]
+
+[i, dim] = size(p);
+idxs = [1 : i]';
+while i >= 1
+    old_size = size(p,1);
+    indices = sum( bsxfun( @ge, p(i,:), p ), 2 ) == dim;
+    indices(i) = false;
+    p(indices,:) = [];
+    idxs(indices) = [];
+    i = i - 1 - (old_size - size(p,1)) + sum(indices(i:end));
+end    
+
+end
+
+
+============================================================
+=== FILE START: performanceMetrics.m
+============================================================
+
+function perf = performanceMetrics(decisions, params) 
+% performanceMetrics computes performance metrics for the sequential test. 
+    
+    nTestFreqs = numel(params.testFrequencies);
+    flagNoise = params.flagNoise;
+    NumTests = params.nChannels * nTestFreqs;
+
+    is_noise = 1:nTestFreqs > flagNoise;
+    mask = zeros(params.nChannels,params.K,nTestFreqs, 'logical');
+    for i = 1:params.nChannels
+        for j = 1:params.K
+            mask(i,j,:) = is_noise;
+        end
+    end
+    is_noise = mask;
+
+    is_detection = decisions(params.testFrequencies,:,:) == 1;
+    is_futility = decisions(params.testFrequencies,:,:) == -1;
+
+    % Vectorized operations for each condition
+    mask_TP = ~is_noise & is_detection;
+    mask_FN = ~is_noise & is_futility;
+    mask_FP = is_noise & is_detection;
+    mask_TN = is_noise & is_futility;
+
+    perf.TP = zeros(params.nChannels,params.K, nTestFreqs);
+    perf.FN = zeros(params.nChannels,params.K, nTestFreqs);
+    perf.FP = zeros(params.nChannels,params.K, nTestFreqs);
+    perf.TN = zeros(params.nChannels,params.K, nTestFreqs);
+
+    perf.TP(mask_TP) = 1;
+    perf.FN(mask_FN) = 1;
+    perf.FP(mask_FP) = 1;
+    perf.TN(mask_TN) = 1;
+
+    perf.TPRr = 100*sum_reduce(sum_reduce(perf.TP,3),1)/NumTests;
+    perf.FNRr = 100*sum_reduce(sum_reduce(perf.FN,3),1)/NumTests;
+    perf.FPRr = 100*sum_reduce(sum_reduce(perf.FP,3),1)/NumTests;
+    perf.TNRr = 100*sum_reduce(sum_reduce(perf.TN,3),1)/NumTests;
+
+    perf.TPR = 100*sum_reduce(sum_reduce(sum_reduce(perf.TP,3),1),2)/(NumTests*params.K);
+    perf.FNR = 100*sum_reduce(sum_reduce(sum_reduce(perf.FN,3),1),2)/(NumTests*params.K);
+    perf.FPR = 100*sum_reduce(sum_reduce(sum_reduce(perf.FP,3),1),2)/(NumTests*params.K);
+    perf.TNR = 100*sum_reduce(sum_reduce(sum_reduce(perf.TN,3),1),2)/(NumTests*params.K);
+
+
+
+    % 
+    % for idx_freq = 1:nTestFreqs
+    % 
+    %         % SIGNAL
+    %         if idx_freq < flagNoise && ...                         % not noise
+    %             ( decisions(channel_n,k, idx_freq)==1 )                    % detected
+    % 
+    %             TP(channel_n,k,idx_freq) = TP(k,idx_freq)+1;
+    %             t_decisao(vk,idx_freq) = ~sum(t_decisao(:,idx_freq),'all');
+    % 
+    %         elseif idx_freq < flagNoise && ...                     % not noise
+    %                 ( decisions(channel_n,k, idx_freq)==-1 )               % gave up 
+    % 
+    %             FN(channel_n,k,idx_freq) = FN(k,idx_freq)+1;
+    %             t_decisao(channel_n,k,idx_freq) = -1*(~sum(t_decisao(:,idx_freq),'all'));
+    % 
+    %         % NOISE
+    %         elseif idx_freq >= flagNoise && ...                    % is noise
+    %                 ( decisions(channel_n,k, idx_freq)==1 )               % detected
+    % 
+    %             FP(channel_n,k,idx_freq) = FP(k,idx_freq)+1;
+    %             t_decisao(channel_n,k,idx_freq) = ~sum(t_decisao(:,idx_freq),'all');
+    % 
+    %         elseif idx_freq >= flagNoise && ...                    % is noise
+    %                 ( decisions(channel_n,k, idx_freq)==-1 )               % gave up
+    % 
+    %             TN(channel_n,k,idx_freq) = TN(k,idx_freq)+1;
+    %             t_decisao(channel_n,k,idx_freq) = -1*(~sum(t_decisao(:,idx_freq),'all'));
+    % 
+    %         end
+    % 
+    % end
+    % 
+    % nDetect = sum(decisions == 1, 'omitnan'); 
+    % % Under a noise-only simulation, detections are false positives. 
+    % perf.FPR = nDetect / NumTests; 
+    % % For signal simulations, TPR would be similarly computed. 
+    % % Here we provide a dummy value. 
+    % perf.TPR = (nDetect) / NumTests; 
+end
+
+
+============================================================
+=== FILE START: plotResults.m
+============================================================
+
+function plotResults(aThresholds, gThresholds, stageMetrics, perf, params,fignum) 
+% plotResults displays the sequential test results and performance metrics. 
+    figure(fignum); 
+    subplot(2,1,1); 
+    hold on; 
+    for channel = 1:params.nChannels
+        for freq = 1:numel(params.testFrequencies)
+            % add if freq is noise or not
+            if freq<=params.flagNoise
+                plot(1:params.K, squeeze(stageMetrics(channel,:,freq)), ...
+                    'b-o', 'LineWidth', 1.2);
+            else
+                % plot(1:params.K, squeeze(stageMetrics(channel,:,freq)), ...
+                %     '-.', 'Color', 0.8*[1 1 1],'LineWidth', 0.8);
+            end
+           
+        end
+    end
+    plot(1:params.K, aThresholds, 'g--', 'LineWidth', 2); 
+    plot(1:params.K, gThresholds, 'r--', 'LineWidth', 2); 
+    xlabel('Stage'); ylabel('Accumulated MSC'); 
+    title('Sequential Test Accumulation'); 
+    legend('Accumulated MSC', 'Detection Threshold', 'Futility Threshold'); 
+    grid on;
+    subplot(2,1,2);
+    bar([perf.FPR, perf.TPR, perf.TNR, perf.FNR]);
+    set(gca, 'XTickLabel', {'FPR','TPR','FNR','TNR'});
+    ylabel('Rate');
+    title('Performance Metrics');
+    grid on;
+end
+
+
+============================================================
+=== FILE START: preprocessSignal.m
+============================================================
+
+function procSignals = preprocessSignal(signals, params) 
+% preprocessSignal removes the DC offset and applies a Butterworth bandpass filter. 
+    procSignals = signals - mean(signals, 2); 
+    [b, a] = butter(params.filter.order, ... 
+        [params.filter.fcLower, params.filter.fcUpper] / (params.Fs/2)); 
+    procSignals = filtfilt(b, a, procSignals); 
+end
+
+
+============================================================
+=== FILE START: sequentialTest.m
+============================================================
+
+function [decisions, stageMetrics] = sequentialTest(MSCvalues, params) 
+% sequentialTest applies the decision process using the accumulated MSC values.
+    % decisions = zeros(1, K); 
+    stageMetrics = cumsum(MSCvalues,2); 
+    decisions = zeros(size(stageMetrics));
+
+    % % Compute stopping decisions
+    % for k = 1:params.K
+    %     decisions(stageMetrics(:,k,:) >= params.aThresholds(k)) = 1;
+    %     decisions(stageMetrics(:,k,:) < params.gThresholds(k)) = -1;
+    % end 
+
+    for channel=1:params.nChannels
+        for freq = params.testFrequencies
+            for k = 1:params.K
+
+                % Useful for debugging
+                % if k==params.K && ( (decisions(channel, k-1, freq))==0 )
+                    % disp('last chance!')
+                    % k
+                    % decs = decisions(channel, :, freq)
+                    % this_met = stageMetrics(channel, k, freq)
+                    % is_signal = params.aThresholds(k)
+                    % is_noise = params.gThresholds(k)
+                % end
+            
+                % if k>1 && ( (decisions(channel, k-1, freq))~=0 )%~isnan(decisions(channel, k, freq))%
+                %     % Not first test and already decided, keep decision
+                %     decisions(channel, k, freq) = decisions(channel, k-1, freq);
+                %     % disp('...')
+                %     % disp([channel, k, freq])
+                %     % disp(decisions(channel, k, freq))
+                % 
+                % else
+                    if stageMetrics(freq,k, channel) >= params.aThresholds(k)
+                        % Enough evidence to detect signal
+                        decisions(freq, k:params.K, channel) = 1;
+                        decisions(freq, 1:k-1, channel) = NaN;
+                        continue
+
+                    elseif stageMetrics(freq, k, channel) < params.gThresholds(k)
+                        % Enough evidence to stop trial (futile)
+                        decisions(freq, k:params.K, channel) = -1;
+                        decisions(freq, 1:k-1, channel) = NaN;
+                        continue
+
+                    elseif k==params.K 
+                        % Last trial, and not enough evidence found for
+                        % either detection criteria (ERROR!)
+                        % decisions(channel, :, freq) = NaN;
+                        error('Oops')
+                        
+                    end
+                
+                % end
+
+            end
+        end
+    end
+
+
+end
+
+%
+% onde stageMetrics(:,k,:) >= aThresholds(k), stageMetrics(:,k,:) = 1
+%
+% onde decisions(:,k+1,:) = decisions(:,1:k,:) if not zero
+
+
+============================================================
+=== FILE START: writes_all_matlab_into_txt.m
+============================================================
+
+% SCRIPT: combine_m_files.m
+% PURPOSE: Reads all .m files in a user-selected folder and concatenates
+%          their content into a single .txt file, separated by headers.
+
+clear; clc; close all;
+
+% --- Configuration ---
+outputFileName = 'combined_m_files.txt'; % Name of the output text file
+
+% --- 1. Select the Folder ---
+folderPath = uigetdir(pwd, 'Select the folder containing .m files');
+
+% Check if the user cancelled the dialog
+if isequal(folderPath, 0)
+    disp('Folder selection cancelled by user. Exiting script.');
+    return; % Exit the script
+end
+
+fprintf('Selected folder: %s\n', folderPath);
+
+% --- 2. Find all .m Files in the Selected Folder ---
+filePattern = fullfile(folderPath, '*.m'); % Create a pattern to search for .m files
+mFiles = dir(filePattern);                 % Get directory listing matching the pattern
+
+% Check if any .m files were found
+if isempty(mFiles)
+    fprintf('No .m files found in the selected folder: %s\n', folderPath);
+    return; % Exit if no files to process
+end
+
+fprintf('Found %d .m file(s) to process.\n', length(mFiles));
+
+% --- 3. Prepare the Output File ---
+outputFilePath = fullfile(folderPath, outputFileName); % Full path for the output file
+
+% Open the output file for writing in text mode ('wt')
+% 'wt' ensures correct line endings across different operating systems.
+outputFileID = fopen(outputFilePath, 'wt');
+
+% Check if the output file could be opened
+if outputFileID == -1
+    error('Cannot open output file "%s" for writing. Check permissions.', outputFilePath);
+    % Error will stop the script execution
+end
+
+% Use onCleanup to ensure the output file is closed even if errors occur
+cleanupOutput = onCleanup(@() fclose(outputFileID));
+
+fprintf('Writing combined content to: %s\n', outputFilePath);
+
+% --- 4. Process Each .m File ---
+totalFilesProcessed = 0;
+for i = 1:length(mFiles)
+    currentMFileName = mFiles(i).name;
+    currentMFilePath = fullfile(folderPath, currentMFileName);
+
+    fprintf('Processing: %s...\n', currentMFileName);
+
+    try
+        % --- Write Header for the Current File ---
+        fprintf(outputFileID, '============================================================\n');
+        fprintf(outputFileID, '=== FILE START: %s\n', currentMFileName);
+        fprintf(outputFileID, '============================================================\n\n');
+
+        % --- Open the current .m file for reading ('rt') ---
+        inputFileID = fopen(currentMFilePath, 'rt');
+        if inputFileID == -1
+            warning('Could not open file: %s. Skipping this file.', currentMFilePath);
+            fprintf(outputFileID, '*** ERROR: Could not read file %s ***\n\n', currentMFileName);
+            continue; % Skip to the next file in the loop
+        end
+        % Ensure the input file is closed after reading or if an error occurs within the loop
+        cleanupInput = onCleanup(@() fclose(inputFileID));
+
+        % --- Read and Write Content Line by Line ---
+        while ~feof(inputFileID)
+            line = fgetl(inputFileID); % Read one line (without newline chars)
+            if ischar(line) % fgetl returns -1 at EOF, which is not a char
+                fprintf(outputFileID, '%s\n', line); % Write the line + a newline
+            end
+        end
+
+        % --- Add Space After File Content ---
+        fprintf(outputFileID, '\n\n'); % Add two newlines for separation
+
+        % Explicitly delete the input file cleanup object for this iteration
+        % (fclose(inputFileID) will be called by it)
+        clear cleanupInput;
+        totalFilesProcessed = totalFilesProcessed + 1;
+
+    catch ME % Catch potential errors during file processing
+        warning('An error occurred while processing file %s: %s. Skipping rest of this file.', ...
+                currentMFileName, ME.message);
+        fprintf(outputFileID, '\n*** ERROR occurred during processing of file %s ***\n\n', currentMFileName);
+        % Ensure input file handle is closed if error happened after opening
+        if exist('inputFileID', 'var') && inputFileID ~= -1 && strcmp(fopen(inputFileID), currentMFilePath)
+             fclose(inputFileID);
+        end
+         clear cleanupInput; % Make sure onCleanup doesn't try to double-close
+    end
+end
+
+% --- 5. Finalization ---
+% Output file is closed automatically by the 'cleanupOutput' onCleanup object
+% when the script finishes or errors out.
+
+fprintf('------------------------------------------------------------\n');
+if totalFilesProcessed == length(mFiles)
+    fprintf('Successfully processed %d .m files.\n', totalFilesProcessed);
+else
+     fprintf('Processed %d out of %d .m files. Some files may have been skipped due to errors (see warnings).\n', ...
+             totalFilesProcessed, length(mFiles));
+end
+fprintf('Combined output written to: %s\n', outputFilePath);
+fprintf('------------------------------------------------------------\n');
+
+% Optional: Open the generated text file
+% uncomment the next line if you want the file to open automatically
+% edit(outputFilePath);
+
+
