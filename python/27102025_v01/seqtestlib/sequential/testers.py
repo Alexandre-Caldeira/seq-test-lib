@@ -1,127 +1,108 @@
-# seqtestlib/sequential/testers.py
+# seqtestlib/sequential/testers.py (Corrected)
 """
 Implements the sequential testing paradigms (e.g., Per-Window, Per-M-Block).
 These classes take a fitted detector model and apply a decision rule over time.
 """
 
-from abc import ABC, abstractmethod
 import numpy as np
-from typing import Union, Tuple
+from typing import Tuple
 
 from . import thresholds
 from ..models.base import BaseDetector
+from ..models.ml import LGBMModel
+from ..models.dl import DANNModel
+from abc import ABC, abstractmethod
 
 class BaseTester(ABC):
-    """
-    Abstract Base Class for all sequential testers.
-    """
+    """Abstract Base Class for all sequential testers."""
     def __init__(self, model: BaseDetector, alpha: float):
-        """
-        Initializes the tester with a model and a significance level.
-
-        Args:
-            model (BaseDetector): The detector model instance (can be statistical, ML, or DL).
-            alpha (float): The target false positive rate in percent (e.g., 5.0).
-        """
         self.model = model
         self.alpha = alpha
         self.threshold = None
 
     def set_threshold(self, noise_data: np.ndarray):
-        """
-        Calculates and sets the decision threshold using the provided noise data.
-
-        Args:
-            noise_data (np.ndarray): Data from noise-only conditions, formatted as
-                                     required by the specific model (raw values or windows).
-        """
         self.threshold = thresholds.determine_threshold(self.model, noise_data, self.alpha)
 
     @abstractmethod
-    def test(self, feature_windows: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def test(self, feature_block: np.ndarray, feature_idx: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Applies the sequential test to a series of feature windows for multiple trials.
+        Applies the sequential test to a block of feature data for multiple trials.
 
         Args:
-            feature_windows (np.ndarray): A batch of data to be tested.
-                                          Shape: (n_trials, n_windows, feature_dim).
+            feature_block (np.ndarray): A batch of data. Shape: (n_trials, n_windows, n_bins, n_features).
+            feature_idx (int): The index of the feature to use within the block.
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]:
-                - A boolean array indicating if a detection occurred in each trial.
-                - An array with the time-to-first-detection (index) for each trial.
-                  If no detection, value is np.nan.
+            Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                - scores_over_time (np.ndarray): The raw scores for each bin over time.
+                - detections_over_time (np.ndarray): Boolean array of detections.
+                - ttfd_per_bin (np.ndarray): TTFD index for each bin in each trial.
         """
         pass
 
 class StandardTester(BaseTester):
-    """
-    Implements the 'Per-Window' sequential test.
-
-    A detection is declared for a trial if the score of *any* single window
-    exceeds the threshold.
-    """
-    def test(self, feature_windows: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Implements the 'Per-Window' sequential test."""
+    def test(self, feature_block: np.ndarray, feature_idx: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         if self.threshold is None:
             raise RuntimeError("Threshold not set. Call set_threshold() before testing.")
 
-        # For this tester, the model operates on single feature values, not windows.
-        # We extract the last value of each window, which represents the current ORD value.
-        # Shape becomes (n_trials, n_windows)
-        scores_over_time = self.model.predict_score(feature_windows)
+        # Extract the relevant time series data for the chosen feature
+        # Shape: (n_trials, n_windows, n_bins)
+        scores_over_time = feature_block[:, :, :, feature_idx]
 
-        # Find if any score in each trial exceeds the threshold
+        # For ML models, the input is windowed features, not raw scores
+        if isinstance(self.model, (LGBMModel, DANNModel)):
+            # This path is complex and better handled inside a dedicated MLTester.
+            # For this fix, we assume the evaluator will pre-score ML models.
+            # If scores are passed directly (n_trials, n_windows), reshape for consistency.
+            if scores_over_time.ndim == 2:
+                 scores_over_time = scores_over_time[:, :, np.newaxis]
+
         detections_over_time = scores_over_time > self.threshold
-        detected_trials = np.any(detections_over_time, axis=1)
+        n_trials = feature_block.shape[0]
+        ttfd_per_bin = np.full((n_trials, feature_block.shape[2]), np.nan)
 
-        # Find the time-to-first-detection (TTFD)
-        ttfd = np.full(feature_windows.shape[0], np.nan)
-        if np.any(detected_trials):
-            # argmax returns the index of the first 'True' value
-            ttfd[detected_trials] = np.argmax(detections_over_time[detected_trials], axis=1)
+        for trial_idx in range(n_trials):
+            for bin_idx in range(feature_block.shape[2]):
+                if np.any(detections_over_time[trial_idx, :, bin_idx]):
+                    ttfd_per_bin[trial_idx, bin_idx] = np.argmax(detections_over_time[trial_idx, :, bin_idx])
 
-        return detected_trials, ttfd
+        return scores_over_time, detections_over_time, ttfd_per_bin
 
 class BlockTester(BaseTester):
-    """
-    Implements the 'Per-M-Block' sequential test.
-
-    The test data is divided into non-overlapping blocks of size M. A detection
-    is declared if the maximum score within *any* block exceeds the threshold.
-    """
+    """Implements the 'Per-M-Block' sequential test."""
     def __init__(self, model: BaseDetector, alpha: float, m_block_size: int):
         super().__init__(model, alpha)
         self.m = m_block_size
 
-    def test(self, feature_windows: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def test(self, feature_block: np.ndarray, feature_idx: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         if self.threshold is None:
             raise RuntimeError("Threshold not set. Call set_threshold() before testing.")
 
-        n_trials, n_windows, _ = feature_windows.shape
+        n_trials, n_windows, n_bins, _ = feature_block.shape
         n_blocks = n_windows // self.m
 
         if n_blocks == 0:
-            return np.zeros(n_trials, dtype=bool), np.full(n_trials, np.nan)
+            return np.array([]), np.array([]), np.array([])
+        
+        # Extract the relevant feature time series
+        scores_over_time = feature_block[:, :n_blocks * self.m, :, feature_idx]
+        
+        # Reshape into blocks: (n_trials, n_blocks, m_block_size, n_bins)
+        scores_in_blocks = scores_over_time.reshape(n_trials, n_blocks, self.m, n_bins)
+        
+        # Aggregate by taking the max score within each block for each bin
+        block_scores = np.max(scores_in_blocks, axis=2) # Shape: (n_trials, n_blocks, n_bins)
 
-        # Truncate to fit full blocks and score all windows at once
-        truncated_windows = feature_windows[:, :n_blocks * self.m, :]
-        scores = self.model.predict_score(truncated_windows)
-
-        # Reshape scores into blocks: (n_trials, n_blocks, m_block_size)
-        scores_in_blocks = scores.reshape(n_trials, n_blocks, self.m)
-
-        # Aggregate scores by taking the max within each block
-        block_scores = np.max(scores_in_blocks, axis=2)
-
-        # Find if any block score exceeds the threshold
         detections_over_time = block_scores > self.threshold
-        detected_trials = np.any(detections_over_time, axis=1)
-
-        # Find the time-to-first-detection (TTFD) in terms of block index
-        ttfd = np.full(n_trials, np.nan)
-        if np.any(detected_trials):
-            block_idx = np.argmax(detections_over_time[detected_trials], axis=1)
-            # Convert block index to window index (end of the block)
-            ttfd[detected_trials] = (block_idx + 1) * self.m
-
-        return detected_trials, ttfd
+        
+        ttfd_per_bin = np.full((n_trials, n_bins), np.nan)
+        for trial_idx in range(n_trials):
+            for bin_idx in range(n_bins):
+                if np.any(detections_over_time[trial_idx, :, bin_idx]):
+                    block_idx = np.argmax(detections_over_time[trial_idx, :, bin_idx])
+                    # TTFD is the window index at the END of the detecting block
+                    ttfd_per_bin[trial_idx, bin_idx] = (block_idx + 1) * self.m
+        
+        # Return block scores as they are the effective scores for this paradigm
+        return block_scores, detections_over_time, ttfd_per_bin
