@@ -1,0 +1,23 @@
+# requirements.txt
+#
+# Core numerical, data manipulation, and utility libraries
+# --------------------------------------------------------
+h5py          # For reading and writing HDF5 files (.mat v7.3+)
+joblib        # For parallel processing
+mat73         # For robust loading of modern .mat files
+numba         # For JIT compilation and performance optimization
+numpy         # Fundamental package for scientific computing
+pandas        # For data analysis and manipulation (results dataframes)
+scikit-learn  # For machine learning utilities (e.g., ShuffleSplit)
+scipy         # For scientific and technical computing (e.g., filtering)
+tqdm          # For progress bars
+
+# Machine Learning & Deep Learning libraries
+# ------------------------------------------
+lightgbm      # Gradient boosting framework
+torch         # Deep learning framework for DANN
+
+# Visualization libraries
+# -------------------------
+matplotlib    # Core plotting library
+seaborn       # Statistical data visualization
