@@ -1,0 +1,35 @@
+DEFAULT_CONFIG = {
+    # --- 1. Paths and Data ---
+    'PATH_MAT_FILE': r"C:\PPGEE\Assessing CGST on ASSR\Numero_Deteccoes_consecutiva_H",
+    'PATH_EEG_DATA': r"C:\Users\alexa\experimental_data\todos\ENTRADAS_PATRICIA",
+    'BASE_OUTPUT_DIR': './plots/protocol_analysis/',
+
+    # --- 2. Performance Enhancements (Turned off by default) ---
+    'USE_MULTIPROCESSING': True,
+    'USE_NUMBA': True,
+    
+    # --- 3. Analysis Parameters ---
+    'VOLUNTEERS': ['Ab', 'An', 'Er', 'Qu', 'Sa', 'Ti', 'Wr'],
+    'INTENSITY': '50dB',
+    'MMAX': 240,
+    'ALPHA': 0.05,
+    'FP_DESEJADO': 0.05,
+    'METRICS_TO_RUN': ['MMSC', 'MCSM', 'D-aMSC', 'D-aCSM'],
+    'TARGET_ELECTRODES': ['Fz', 'Cz', 'Pz', 'Oz', 'T3', 'T4'],
+    
+    # --- 4. Preprocessing Parameters (Integrated from reference) ---
+    'FILTER_TYPE': 'custom',              # Options: 'custom' or None
+    'CUSTOM_FILTER_LOW_CUT': 30.0,
+    'CUSTOM_FILTER_HIGH_CUT': 300.0,
+    'CUSTOM_FILTER_ORDER': 2,
+    'APPLY_NOTCH_FILTER': False,          # Options: True or False
+    'NOTCH_FREQ': 60.0,
+    'NOTCH_Q': 100,
+    'ARTIFACT_REJECTION_TYPE': 'percentile', # Options: 'percentile' or None
+    'PERCENTILE_REMOVAL_AMOUNT': 5,
+    'APPLY_MEAN_REMOVAL': True,           # Options: True or False
+    'REMOVE_FIRST_TWO_WINDOWS': False,    # Options: True or False
+    
+    # --- 5. System Parameters ---
+    'ALL_ELECTRODES': ['Fz','F3','F4','F7','Fcz','Cz','C3','C4','Pz','P3','P4','T3','T4','T5','T6','Oz']
+}

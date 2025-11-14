@@ -1,0 +1,57 @@
+PATH_MAT_FILE: C:\PPGEE\Assessing CGST on ASSR\Numero_Deteccoes_consecutiva_H
+PATH_EEG_DATA: C:\Users\alexa\experimental_data\todos\ENTRADAS_PATRICIA
+BASE_OUTPUT_DIR: ./plots/protocol_analysis/
+USE_MULTIPROCESSING: true
+USE_NUMBA: true
+VOLUNTEERS:
+- Ab
+- An
+- Er
+- Qu
+- Sa
+- Ti
+- Wr
+INTENSITY: 50dB
+MMAX: 240
+ALPHA: 0.05
+FP_DESEJADO: 0.05
+METRICS_TO_RUN:
+- MMSC
+- MCSM
+- D-aMSC
+- D-aCSM
+TARGET_ELECTRODES:
+- Fz
+- Cz
+- Pz
+- Oz
+- T3
+- T4
+FILTER_TYPE: custom
+CUSTOM_FILTER_LOW_CUT: 30.0
+CUSTOM_FILTER_HIGH_CUT: 300.0
+CUSTOM_FILTER_ORDER: 2
+APPLY_NOTCH_FILTER: false
+NOTCH_FREQ: 60.0
+NOTCH_Q: 100
+ARTIFACT_REJECTION_TYPE: percentile
+PERCENTILE_REMOVAL_AMOUNT: 5
+APPLY_MEAN_REMOVAL: true
+REMOVE_FIRST_TWO_WINDOWS: false
+ALL_ELECTRODES:
+- Fz
+- F3
+- F4
+- F7
+- Fcz
+- Cz
+- C3
+- C4
+- Pz
+- P3
+- P4
+- T3
+- T4
+- T5
+- T6
+- Oz

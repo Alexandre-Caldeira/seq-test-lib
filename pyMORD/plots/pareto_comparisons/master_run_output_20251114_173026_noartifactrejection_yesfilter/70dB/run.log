@@ -1,0 +1,106 @@
+
+================================================================================
+--- PROCESSING INTENSITY: 70dB | Mmax: 50 ---
+================================================================================
+
+
+--- STARTING ANALYSIS FOR METRIC: MSC ---
+
+
+
+--- STARTING SIMULATION: Baseline_H0_MSC for 70dB ---
+
+
+[2025-11-14 17:30:26.248544] Generating H0 data using 'Baseline' method...
+Generated 199 protocol parameters to optimize.
+Results saved to 'q8_which_sim_is_best\master_run_output_20251114_173026\70dB\Baseline_H0_MSC_computed_data.npz'
+
+
+--- STARTING SIMULATION: Hybrid_SNR_H0_MSC for 70dB ---
+
+
+[2025-11-14 17:30:46.081041] Generating H0 data using 'Hybrid SNR' method...
+Generated 199 protocol parameters to optimize.
+Results saved to 'q8_which_sim_is_best\master_run_output_20251114_173026\70dB\Hybrid_SNR_H0_MSC_computed_data.npz'
+
+
+--- STARTING SIMULATION: VarSNR_Mean_-15dB_Std_0dB_MSC for 70dB ---
+
+
+[2025-11-14 17:31:01.733835] Generating H0 data using 'Variable SNR' method (Mean=-15dB, Std=0dB)...
+Generated 199 protocol parameters to optimize.
+Results saved to 'q8_which_sim_is_best\master_run_output_20251114_173026\70dB\VarSNR_Mean_-15dB_Std_0dB_MSC_computed_data.npz'
+
+
+--- STARTING SIMULATION: VarSNR_Mean_-15dB_Std_5dB_MSC for 70dB ---
+
+
+[2025-11-14 17:31:16.792761] Generating H0 data using 'Variable SNR' method (Mean=-15dB, Std=5dB)...
+Generated 199 protocol parameters to optimize.
+Results saved to 'q8_which_sim_is_best\master_run_output_20251114_173026\70dB\VarSNR_Mean_-15dB_Std_5dB_MSC_computed_data.npz'
+
+
+--- STARTING SIMULATION: VarSNR_Mean_-15dB_Std_10dB_MSC for 70dB ---
+
+
+[2025-11-14 17:31:31.475164] Generating H0 data using 'Variable SNR' method (Mean=-15dB, Std=10dB)...
+Generated 199 protocol parameters to optimize.
+Results saved to 'q8_which_sim_is_best\master_run_output_20251114_173026\70dB\VarSNR_Mean_-15dB_Std_10dB_MSC_computed_data.npz'
+
+--- STARTING ANALYSIS FOR METRIC: CSM ---
+
+
+
+--- STARTING SIMULATION: Baseline_H0_CSM for 70dB ---
+
+
+[2025-11-14 17:31:43.917828] Generating H0 data using 'Baseline' method...
+Generated 199 protocol parameters to optimize.
+Results saved to 'q8_which_sim_is_best\master_run_output_20251114_173026\70dB\Baseline_H0_CSM_computed_data.npz'
+
+
+--- STARTING SIMULATION: Hybrid_SNR_H0_CSM for 70dB ---
+
+
+[2025-11-14 17:32:05.394701] Generating H0 data using 'Hybrid SNR' method...
+Generated 199 protocol parameters to optimize.
+Results saved to 'q8_which_sim_is_best\master_run_output_20251114_173026\70dB\Hybrid_SNR_H0_CSM_computed_data.npz'
+
+
+--- STARTING SIMULATION: VarSNR_Mean_-15dB_Std_0dB_CSM for 70dB ---
+
+
+[2025-11-14 17:32:26.884604] Generating H0 data using 'Variable SNR' method (Mean=-15dB, Std=0dB)...
+Generated 199 protocol parameters to optimize.
+Results saved to 'q8_which_sim_is_best\master_run_output_20251114_173026\70dB\VarSNR_Mean_-15dB_Std_0dB_CSM_computed_data.npz'
+
+
+--- STARTING SIMULATION: VarSNR_Mean_-15dB_Std_5dB_CSM for 70dB ---
+
+
+[2025-11-14 17:32:45.378544] Generating H0 data using 'Variable SNR' method (Mean=-15dB, Std=5dB)...
+Generated 199 protocol parameters to optimize.
+Results saved to 'q8_which_sim_is_best\master_run_output_20251114_173026\70dB\VarSNR_Mean_-15dB_Std_5dB_CSM_computed_data.npz'
+
+
+--- STARTING SIMULATION: VarSNR_Mean_-15dB_Std_10dB_CSM for 70dB ---
+
+
+[2025-11-14 17:33:04.978515] Generating H0 data using 'Variable SNR' method (Mean=-15dB, Std=10dB)...
+Generated 199 protocol parameters to optimize.
+Results saved to 'q8_which_sim_is_best\master_run_output_20251114_173026\70dB\VarSNR_Mean_-15dB_Std_10dB_CSM_computed_data.npz'
+
+
+--- Generating Standardized Pareto Plots for 70dB ---
+Generated individual Pareto plot for Baseline_H0_MSC.
+Generated individual Pareto plot for Hybrid_SNR_H0_MSC.
+Generated individual Pareto plot for VarSNR_Mean_-15dB_Std_0dB_MSC.
+Generated individual Pareto plot for VarSNR_Mean_-15dB_Std_5dB_MSC.
+Generated individual Pareto plot for VarSNR_Mean_-15dB_Std_10dB_MSC.
+Generated individual Pareto plot for Baseline_H0_CSM.
+Generated individual Pareto plot for Hybrid_SNR_H0_CSM.
+Generated individual Pareto plot for VarSNR_Mean_-15dB_Std_0dB_CSM.
+Generated individual Pareto plot for VarSNR_Mean_-15dB_Std_5dB_CSM.
+Generated individual Pareto plot for VarSNR_Mean_-15dB_Std_10dB_CSM.
+
+--- Plotting Full Pareto Comparison for 70dB ---
